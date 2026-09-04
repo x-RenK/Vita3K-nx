@@ -87,6 +87,12 @@ static bool g_switch_pool_ready = false;
 // surviving mapping with a fresh allocator/page table.
 static bool g_switch_pool_cleanup_failed = false;
 
+// Entry for a guest page with no host backing. Must be null: Dynarmic only diverts
+// to the checked memory callbacks on a zero entry, and the desktop "identity" entry
+// (memory.get() + addr, which faults inside its 4 GiB PROT_NONE reservation) lands
+// outside the far smaller Switch pool for any high guest address.
+static constexpr PagePtr SWITCH_UNBACKED_PAGE = nullptr;
+
 static bool switch_pool_init(size_t pool_bytes, uint32_t total_pages) {
     if (g_switch_pool_ready)
         return true;
@@ -212,7 +218,7 @@ static bool switch_decommit_range(MemState &state, uint64_t start, uint64_t size
         }
         for (uint32_t k = 0; k < runlen; k++) {
             if (state.use_page_table)
-                state.page_table[gp0 + i + k] = state.memory.get();
+                state.page_table[gp0 + i + k] = SWITCH_UNBACKED_PAGE;
             g_switch_guest_pool[gp0 + i + k] = -1;
             g_switch_pool_guest[pp + k] = -1;
         }
@@ -512,8 +518,12 @@ bool init(MemState &state, const bool use_page_table) {
 #endif
     if (state.use_page_table) {
         state.page_table = PageTable(new PagePtr[TOTAL_MEM_SIZE / KiB(4)]);
+#ifdef __SWITCH__
+        std::fill_n(state.page_table.get(), TOTAL_MEM_SIZE / KiB(4), SWITCH_UNBACKED_PAGE);
+#else
         // Default: identity (host == state.memory + addr) for as-yet-uncommitted pages.
         std::fill_n(state.page_table.get(), TOTAL_MEM_SIZE / KiB(4), state.memory.get());
+#endif
     }
 
     const auto handler = [&state](uint8_t *addr, bool write) noexcept {
@@ -810,6 +820,8 @@ void unprotect_inner(MemState &state, Address addr, uint32_t size) {
         fmt::print("Unprotect: {} {}\n", log_hex(addr), size);
     }
     uint8_t *addr_ptr = state.use_page_table ? state.page_table[addr / KiB(4)] : state.memory.get();
+    if (!addr_ptr)
+        return;
 
     uint8_t *target = &addr_ptr[addr];
     uint8_t *aligned_start = reinterpret_cast<uint8_t *>(
@@ -834,6 +846,8 @@ void unprotect_inner(MemState &state, Address addr, uint32_t size) {
 
 void protect_inner(MemState &state, Address addr, uint32_t size, const MemPerm perm) {
     uint8_t *addr_ptr = state.use_page_table ? state.page_table[addr / KiB(4)] : state.memory.get();
+    if (!addr_ptr)
+        return;
 
     uint8_t *target = &addr_ptr[addr];
     uint8_t *aligned_start = reinterpret_cast<uint8_t *>(
@@ -976,6 +990,14 @@ bool is_protecting(MemState &state, Address addr, MemPerm *perm) {
 bool add_page_alias(MemState &mem, Address dst, Address src, uint32_t size) {
     if (!mem.use_page_table || ((dst | src | size) & (KiB(4) - 1)) != 0)
         return false;
+    // Checked up front so a failure leaves the destination untouched rather than
+    // half-aliased.
+    for (uint32_t off = 0; off < size; off += KiB(4)) {
+        if (!mem.page_table[(src + off) / KiB(4)]) {
+            LOG_ERROR("add_page_alias: source page 0x{:X} has no host backing", src + off);
+            return false;
+        }
+    }
     for (uint32_t off = 0; off < size; off += KiB(4)) {
         const Address s = src + off;
         const Address d = dst + off;

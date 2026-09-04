@@ -355,7 +355,8 @@ public:
     template <typename T>
     T MemoryRead(Dynarmic::A32::VAddr addr) {
         Ptr<T> ptr{ addr };
-        if (!ptr || !is_valid_addr_range_size(*parent->mem, addr, sizeof(T))
+        T *const host = ptr.get(*parent->mem);
+        if (!host || !is_valid_addr_range_size(*parent->mem, addr, sizeof(T))
             || ptr.address() < parent->mem->host_page_size) {
             LOG_ERROR("Invalid read of uint{}_t at address: 0x{:x}\n{}", sizeof(T) * 8, addr, this->cpu->save_context().description());
 
@@ -367,7 +368,7 @@ public:
             return 0;
         }
 
-        T ret = *ptr.get(*parent->mem);
+        T ret = *host;
         if (cpu->log_mem) {
             LOG_TRACE("Read uint{}_t at address: 0x{:x}, val = 0x{:x}", sizeof(T) * 8, addr, ret);
         }
@@ -393,7 +394,8 @@ public:
     template <typename T>
     void MemoryWrite(Dynarmic::A32::VAddr addr, T value) {
         Ptr<T> ptr{ addr };
-        if (!ptr || !is_valid_addr_range_size(*parent->mem, addr, sizeof(T))
+        T *const host = ptr.get(*parent->mem);
+        if (!host || !is_valid_addr_range_size(*parent->mem, addr, sizeof(T))
             || ptr.address() < parent->mem->host_page_size) {
             LOG_ERROR("Invalid write of uint{}_t at addr: 0x{:x}, val = 0x{:x}\n{}", sizeof(T) * 8, addr, value, this->cpu->save_context().description());
 
@@ -405,7 +407,7 @@ public:
             return;
         }
 
-        *ptr.get(*parent->mem) = value;
+        *host = value;
         if (cpu->log_mem) {
             LOG_TRACE("Write uint{}_t at addr: 0x{:x}, val = 0x{:x}", sizeof(T) * 8, addr, value);
         }
@@ -430,7 +432,7 @@ public:
     template <typename T>
     bool MemoryWriteExclusive(Dynarmic::A32::VAddr addr, T value, T expected) {
         Ptr<T> ptr{ addr };
-        if (!ptr || !is_valid_addr_range_size(*parent->mem, addr, sizeof(T))
+        if (!ptr.get(*parent->mem) || !is_valid_addr_range_size(*parent->mem, addr, sizeof(T))
             || ptr.address() < parent->mem->host_page_size) {
             LOG_ERROR("Invalid exclusive write of uint{}_t at addr: 0x{:x}, val = 0x{:x}, expected = 0x{:x}\n{}", sizeof(T) * 8, addr, value, expected, this->cpu->save_context().description());
 

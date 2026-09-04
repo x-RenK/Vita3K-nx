@@ -65,7 +65,10 @@ public:
         if (addr == 0) {
             return nullptr;
         } else if (mem.use_page_table) {
-            return reinterpret_cast<T *>(mem.page_table[addr / KiB(4)] + addr);
+            // A null entry means the page has no host backing; entry + addr would be
+            // a wild pointer.
+            uint8_t *const entry = mem.page_table[addr / KiB(4)];
+            return entry ? reinterpret_cast<T *>(entry + addr) : nullptr;
         } else {
             return reinterpret_cast<T *>(&mem.memory[addr]);
         }
@@ -76,6 +79,8 @@ public:
         static_assert(std::is_arithmetic_v<U>);
         static_assert(std::is_same_v<U, T>);
         uint8_t *mem_ptr = mem.use_page_table ? mem.page_table[addr / KiB(4)] : mem.memory.get();
+        if (!mem_ptr)
+            return false;
         const auto ptr = reinterpret_cast<volatile U *>(&mem_ptr[addr]);
         return ::atomic_compare_and_swap(ptr, value, expected);
     }
