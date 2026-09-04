@@ -203,6 +203,7 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(bool, "disable-motion", false, disable_motion)                                                 \
     code(float, "controller-analog-multiplier", 1.0f, controller_analog_multiplier)                     \
     code(int, "switch-stick-deadzone", 15, switch_stick_deadzone)                                      \
+    code(bool, "switch-swap-shoulders", false, switch_swap_shoulders)                                 \
     code(std::string, "switch-rear-touch", "zl", switch_rear_touch)                                   \
     code(bool, "switch-rear-touch-triggers", true, switch_rear_touch_triggers)                        \
     code(std::string, "switch-button-a", "circle", switch_button_a)                                   \

@@ -858,33 +858,41 @@ static SwitchControllerFrame switch_poll_controller(EmuEnvState &emuenv, PadStat
     set_common(HidNpadButton_Down, SCE_CTRL_DOWN);
     set_common(HidNpadButton_Left, SCE_CTRL_LEFT);
 
+    // Everything below works off these, so the swap carries into the rear-touch
+    // modifier and the L2/R2 mapping.
+    const bool swap_shoulders = emuenv.cfg.switch_swap_shoulders;
+    const u64 nx_shoulder_l = swap_shoulders ? HidNpadButton_ZL : HidNpadButton_L;
+    const u64 nx_shoulder_r = swap_shoulders ? HidNpadButton_ZR : HidNpadButton_R;
+    const u64 nx_trigger_l = swap_shoulders ? HidNpadButton_L : HidNpadButton_ZL;
+    const u64 nx_trigger_r = swap_shoulders ? HidNpadButton_R : HidNpadButton_ZR;
+
     // The original Vita API exposes L/R; the extended API distinguishes
     // L1/R1, triggers, and stick clicks.
-    set_base(HidNpadButton_L, SCE_CTRL_L);
-    set_base(HidNpadButton_R, SCE_CTRL_R);
-    set_ext(HidNpadButton_L, SCE_CTRL_L1);
-    set_ext(HidNpadButton_R, SCE_CTRL_R1);
+    set_base(nx_shoulder_l, SCE_CTRL_L);
+    set_base(nx_shoulder_r, SCE_CTRL_R);
+    set_ext(nx_shoulder_l, SCE_CTRL_L1);
+    set_ext(nx_shoulder_r, SCE_CTRL_R1);
     // A handheld Vita has a rear panel and no L2/R2/L3/R3; a PS TV has those
     // four buttons and no rear panel. The mapping follows the emulated hardware:
     // on PS TV the buttons go to the pad, otherwise they are rear-panel
     // quadrants and claim those bits whole so no press is delivered twice.
     const bool rear_triggers = emuenv.cfg.switch_rear_touch_triggers
         && !emuenv.cfg.current_config.pstv_mode;
-    emuenv.touch.rear_touch_held[0] = rear_triggers && (held & HidNpadButton_ZL);
-    emuenv.touch.rear_touch_held[1] = rear_triggers && (held & HidNpadButton_ZR);
+    emuenv.touch.rear_touch_held[0] = rear_triggers && (held & nx_trigger_l);
+    emuenv.touch.rear_touch_held[1] = rear_triggers && (held & nx_trigger_r);
     emuenv.touch.rear_touch_held[2] = rear_triggers && (held & HidNpadButton_StickL);
     emuenv.touch.rear_touch_held[3] = rear_triggers && (held & HidNpadButton_StickR);
 
-    const bool rear_zl = !rear_triggers && emuenv.cfg.switch_rear_touch == "zl" && (held & HidNpadButton_ZL);
-    const bool rear_zr = !rear_triggers && emuenv.cfg.switch_rear_touch == "zr" && (held & HidNpadButton_ZR);
+    const bool rear_zl = !rear_triggers && emuenv.cfg.switch_rear_touch == "zl" && (held & nx_trigger_l);
+    const bool rear_zr = !rear_triggers && emuenv.cfg.switch_rear_touch == "zr" && (held & nx_trigger_r);
     emuenv.touch.touchscreen_port = (rear_zl || rear_zr) && !vmouse.enabled
         ? SCE_TOUCH_PORT_BACK
         : SCE_TOUCH_PORT_FRONT;
     emuenv.touch.touchscreen_both = !rear_triggers && emuenv.cfg.switch_rear_touch == "both" && !vmouse.enabled;
     if (!rear_triggers && emuenv.cfg.switch_rear_touch != "zl")
-        set_ext(HidNpadButton_ZL, SCE_CTRL_L2);
+        set_ext(nx_trigger_l, SCE_CTRL_L2);
     if (!rear_triggers && emuenv.cfg.switch_rear_touch != "zr")
-        set_ext(HidNpadButton_ZR, SCE_CTRL_R2);
+        set_ext(nx_trigger_r, SCE_CTRL_R2);
     if (!rear_triggers) {
         set_ext(HidNpadButton_StickL, SCE_CTRL_L3);
         set_ext(HidNpadButton_StickR, SCE_CTRL_R3);

@@ -329,6 +329,14 @@ static const Choice C_aniso[]    = { {"Off","1"}, {"2x","2"}, {"4x","4"}, {"8x",
 static const Choice C_memmap[]   = { {"External host","external-host"}, {"Double buffer","double-buffer"}, {"Disabled","disabled"} };
 static const Choice C_analog[]   = { {"0.5x","0.5"}, {"1.0x","1.0"}, {"1.5x","1.5"}, {"2.0x","2.0"} };
 static const Choice C_reartouch[]= { {"Off","off"}, {"ZL + touchscreen","zl"}, {"ZR + touchscreen","zr"}, {"Front and rear together","both"} };
+// Same values, named for the buttons left once L/R and ZL/ZR are swapped.
+static const Choice C_reartouchSwap[]= { {"Off","off"}, {"L + touchscreen","zl"}, {"R + touchscreen","zr"}, {"Front and rear together","both"} };
+
+static bool shouldersSwapped() { return !strcmp(iniGet("switch-swap-shoulders", "false"), "true"); }
+
+static const Choice *optChoices(const Opt &o) {
+  return (o.ch == C_reartouch && shouldersSwapped()) ? C_reartouchSwap : o.ch;
+}
 static const Choice C_vitaface[]= { {"Cross","cross"}, {"Circle","circle"}, {"Triangle","triangle"}, {"Square","square"} };
 static const Choice C_sysbtn[]   = { {"Circle","0"}, {"Cross","1"} };  // SCE_SYSTEM_PARAM_ENTER_BUTTON_*
 static const Choice C_datefmt[]  = { {"YYYY/MM/DD","0"}, {"DD/MM/YYYY","1"}, {"MM/DD/YYYY","2"} }; // SCE_SYSTEM_PARAM_DATE_FORMAT_*
@@ -436,6 +444,7 @@ static const Opt S_controller[] = {
   O_CHOICE("Disable motion",      "disable-motion",               C_bool,      "false"),
   O_CHOICE("Stick sensitivity",   "controller-analog-multiplier", C_analog,    "1.0"),
   O_RANGE ("Stick deadzone (%)",  "switch-stick-deadzone",        0, 40, 2,    "15"),
+  O_CHOICE("Swap L/R with ZL/ZR", "switch-swap-shoulders",         C_bool,      "false"),
   O_CHOICE("Rear touch modifier", "switch-rear-touch",            C_reartouch, "zl"),
   O_CHOICE("Rear touch buttons",  "switch-rear-touch-triggers",   C_bool,      "true"),
   O_CHOICE("Switch A maps to",    "switch-button-a",              C_vitaface,  "circle"),
@@ -2252,7 +2261,7 @@ static void optValue(const Opt &o, char *out, int n) {
     if(strcmp(filter,"FXAA")) filter="Bilinear";
     snprintf(out,n,"%s",LauncherLocalization::Translate(filter).data()); return;
   }
-  if (o.type==OT_CHOICE){ int i=choiceIdx(o); const char *raw=i>=0?o.ch[i].label:iniGet(o.key,o.def);
+  if (o.type==OT_CHOICE){ int i=choiceIdx(o); const char *raw=i>=0?optChoices(o)[i].label:iniGet(o.key,o.def);
     const std::string_view shown=i>=0?LauncherLocalization::Translate(raw):std::string_view(raw);
     snprintf(out,n,"%s",shown.data()); }
   else if (o.type==OT_RANGE){ snprintf(out,n,"%s", iniGet(o.key,o.def)); }
@@ -2351,8 +2360,9 @@ static const SettingHelpEntry SETTING_HELP[] = {
   {"disable-motion","Controls","Disables Vita motion-sensor input derived from the active Switch controller."},
   {"controller-analog-multiplier","Controls","Scales analog stick movement before it is sent to the emulated Vita."},
   {"switch-stick-deadzone","Controls","Ignores small stick movements to reduce drift. Too high a value reduces fine control."},
+  {"switch-swap-shoulders","Controls","Swaps the Switch shoulder buttons with the triggers, so ZL and ZR act as the Vita L and R. The rear touch options below follow the swap and name whichever pair is left."},
   {"switch-rear-touch","Controls","Chooses the shoulder-button modifier used with the touchscreen to emulate the Vita rear touch panel. \"Front and rear together\" uses no modifier and reports every touch on both panels at once, for games that ask for the two to be pressed together. Like the other choices here it needs \"Rear touch buttons\" below turned off."},
-  {"switch-rear-touch-triggers","Controls","Puts L2, R2, L3 and R3 on the quadrants of the Vita rear touch panel, where most games expect them: ZL and ZR press the top two, the stick clicks the bottom two. Takes over those four buttons, so the rear touch modifier above is ignored."},
+  {"switch-rear-touch-triggers","Controls","Puts L2, R2, L3 and R3 on the quadrants of the Vita rear touch panel, where most games expect them: the triggers press the top two, the stick clicks the bottom two. Takes over those four buttons, so the rear touch modifier above is ignored."},
   {"switch-button-a","Controls","Chooses which Vita face button is produced by Nintendo Switch A."},
   {"switch-button-b","Controls","Chooses which Vita face button is produced by Nintendo Switch B."},
   {"switch-button-x","Controls","Chooses which Vita face button is produced by Nintendo Switch X."},
@@ -2775,7 +2785,7 @@ static void moduleListPicker(const Opt &option){
 static void optChoosePopup(const Opt &o) {
   if(o.type!=OT_CHOICE || o.nch<=0) return;
   const char* labels[32]; int n = o.nch>32?32:o.nch;
-  for(int i=0;i<n;i++) labels[i]=o.ch[i].label;
+  for(int i=0;i<n;i++) labels[i]=optChoices(o)[i].label;
   int idx = dropdown(o.label, labels, n, choiceIdx(o));
   if(idx>=0 && idx<o.nch) iniSet(o.key, o.ch[idx].val);
 }
