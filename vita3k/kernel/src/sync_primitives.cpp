@@ -1328,11 +1328,16 @@ int condvar_wait(KernelState &kernel, MemState &mem, const char *export_name, Sc
     const auto data_it = condvar->waiting_threads->push(data);
     thread_lock.unlock();
 
-    if (auto error = handle_timeout(kernel, thread, thread_lock, condition_variable_lock, condvar->waiting_threads, data_it, export_name, timeout))
-        return error;
+    const int wait_res = handle_timeout(kernel, thread, thread_lock, condition_variable_lock, condvar->waiting_threads, data_it, export_name, timeout);
 
     condition_variable_lock.unlock();
-    return mutex_lock_impl(kernel, mem, export_name, thread_id, 1, condvar->associated_mutex, weight, timeout, false);
+
+    // The kernel hands the associated mutex back however the wait ended, and Sony's
+    // libraries rely on it: the Fios scheduler records itself as the owner after every
+    // return, timeout included, and traps if a later unlock comes from another thread.
+    // The re-lock is untimed, so a waiter that timed out still returns owning the mutex.
+    const int lock_res = mutex_lock_impl(kernel, mem, export_name, thread_id, 1, condvar->associated_mutex, weight, nullptr, false);
+    return wait_res != SCE_KERNEL_OK ? wait_res : lock_res;
 }
 
 int condvar_signal(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID condid, Condvar::SignalTarget signal_target, SyncWeight weight) {
