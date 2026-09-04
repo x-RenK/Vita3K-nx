@@ -19,6 +19,7 @@
 #include "util/log.h"
 #include "util/switch_thread.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -252,17 +253,29 @@ void SwitchAudioAdapter::audio_output(AudioOutPort &out_port, const void *buffer
     // two guest threads can never claim the same reusable wavebuf slot.
     std::lock_guard<std::mutex> submit_lock(port.submit_mutex);
 
+    // The hardware call returns once the previous buffer has played, so filling the
+    // whole ring instead lets a guest audio thread run far ahead of the sound.
+    const int max_in_flight = std::clamp(
+        static_cast<int>((60000 + port.len_microseconds - 1) / std::max<uint64_t>(port.len_microseconds, 1)),
+        2, port.num_slots);
+
     // Find a reusable wavebuf slot, applying backpressure until one frees up so
     // the guest is paced by the renderer's consumption rate. Slot states live
     // under driver_mutex, so the wait must use that same lock with the search as
     // its predicate or a wakeup landing in between is lost.
     const auto find_slot = [&]() {
+        int in_flight = 0;
+        int free_slot = -1;
         for (int i = 0; i < port.num_slots; i++) {
             const AudioDriverWaveBufState st = port.wavebufs[i].state;
-            if (st == AudioDriverWaveBufState_Free || st == AudioDriverWaveBufState_Done)
-                return i;
+            if (st == AudioDriverWaveBufState_Free || st == AudioDriverWaveBufState_Done) {
+                if (free_slot < 0)
+                    free_slot = i;
+            } else {
+                in_flight++;
+            }
         }
-        return -1;
+        return in_flight < max_in_flight ? free_slot : -1;
     };
 
     std::unique_lock<std::mutex> dlock(driver_mutex);
