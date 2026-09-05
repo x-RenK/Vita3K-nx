@@ -469,6 +469,15 @@ static ExitCode load_app_impl(SceUID &main_module_id, EmuEnvState &emuenv, const
     emuenv.kernel.process_exit_callback = [&emuenv](int res, std::optional<AppLaunchRequest> relaunch) {
         emuenv.post_app_launch_request(relaunch.value_or(AppLaunchRequest{ .reason = AppLaunchReason::ProcessExit }));
     };
+    emuenv.kernel.accurate_thread_scheduling = emuenv.cfg.current_config.accurate_thread_scheduling;
+    // The desktop settings dialog switches both together; the launcher exposes one option.
+    emuenv.kernel.preempt_on_wake = emuenv.cfg.current_config.preempt_on_wake || emuenv.cfg.current_config.accurate_thread_scheduling;
+    emuenv.kernel.preempt_on_wake_us = emuenv.cfg.current_config.preempt_on_wake_us;
+    guest_sched_set_cores(emuenv.cfg.current_config.guest_cores);
+    if (emuenv.kernel.accurate_thread_scheduling)
+        LOG_INFO("Accurate thread scheduling enabled: default-affinity guest threads run one per core, by priority");
+    if (emuenv.kernel.preempt_on_wake)
+        LOG_INFO("Preempt-on-wake enabled ({}us window)", emuenv.kernel.preempt_on_wake_us);
     if (!emuenv.kernel.init(emuenv.mem, call_import, emuenv.cfg.current_config.cpu_opt)) {
         LOG_WARN("Failed to init kernel!");
         return KernelInitFailed;

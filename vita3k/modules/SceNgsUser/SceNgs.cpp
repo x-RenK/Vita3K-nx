@@ -393,6 +393,7 @@ EXPORT(SceInt32, sceNgsRackRelease, ngs::Rack *rack, Ptr<void> callback) {
         // but I don't think this is allowed (and if it is I don't know how to prevent this)
         LOG_WARN_ONCE("sceNgsRackRelease called in a synchronous way during a ngs update, contact devs if your game softlocks now.");
 
+        guest_sched_release_for_block();
         rack->system->voice_scheduler.condvar.wait(lock);
         ngs::release_rack(emuenv.ngs, emuenv.mem, rack->system, rack);
     } else {
@@ -459,6 +460,7 @@ EXPORT(SceInt32, sceNgsSystemRelease, ngs::System *system) {
         if (system->voice_scheduler.is_updating) {
             LOG_WARN_ONCE("sceNgsSystemRelease called during a ngs update, contact devs if your game softlocks now.");
 
+            guest_sched_release_for_block();
             system->voice_scheduler.condvar.wait(lock);
         }
     }

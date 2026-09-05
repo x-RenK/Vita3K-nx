@@ -204,6 +204,10 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(float, "controller-analog-multiplier", 1.0f, controller_analog_multiplier)                     \
     code(int, "switch-stick-deadzone", 15, switch_stick_deadzone)                                      \
     code(bool, "switch-swap-shoulders", false, switch_swap_shoulders)                                 \
+    code(bool, "accurate-thread-scheduling", false, accurate_thread_scheduling)                        \
+    code(bool, "preempt-on-wake", false, preempt_on_wake)                                              \
+    code(int, "preempt-on-wake-us", 1000, preempt_on_wake_us)                                          \
+    code(int, "guest-cores", 3, guest_cores)                                                           \
     code(std::string, "switch-rear-touch", "zl", switch_rear_touch)                                   \
     code(bool, "switch-rear-touch-triggers", true, switch_rear_touch_triggers)                        \
     code(std::string, "switch-button-a", "circle", switch_button_a)                                   \

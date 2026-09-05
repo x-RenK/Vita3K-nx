@@ -33,6 +33,12 @@
 struct CPUContext;
 
 struct ThreadState;
+
+void guest_sched_set_cores(int cores);
+void guest_sched_release_for_block();
+void guest_sched_forget_cpu(CPUState *cpu);
+CPUState *guest_sched_token_cpu();
+
 struct ThreadParams;
 struct KernelState;
 
@@ -159,6 +165,7 @@ struct ThreadState {
 
     ThreadState() = delete;
     explicit ThreadState(SceUID id, KernelState &kernel, MemState &mem);
+    ~ThreadState();
 
     int init(const char *name, Ptr<const void> entry_point, int init_priority, SceInt32 affinity_mask, int stack_size, const SceKernelThreadOptParam *option);
     int start(SceSize arglen, const Ptr<void> argp, bool run_entry_callback = false);

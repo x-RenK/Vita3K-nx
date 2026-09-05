@@ -38,6 +38,7 @@ enum class RestartRequiredSetting : uint8_t {
     ValidationLayer = 8,
     SpirvShader = 9,
     FullPrecision = 10,
+    AccurateThreadScheduling = 11,
 };
 
 std::vector<RestartRequiredSetting> get_restart_required_settings(

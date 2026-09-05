@@ -2327,15 +2327,18 @@ EXPORT(int, sceGxmDisplayQueueAddEntry, Ptr<SceGxmSyncObject> oldBuffer, Ptr<Sce
 
     renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::NewFrame, false, frame, &emuenv.display, active_renderer_context);
 
-    if (emuenv.gxm.params.displayQueueMaxPendingCount == 1)
+    if (emuenv.gxm.params.displayQueueMaxPendingCount == 1) {
         // double buffering, not handled by the queue configuration
+        guest_sched_release_for_block();
         emuenv.gxm.display_queue.wait_empty();
+    }
 
     return 0;
 }
 
 EXPORT(int, sceGxmDisplayQueueFinish) {
     TRACY_FUNC(sceGxmDisplayQueueFinish);
+    guest_sched_release_for_block();
     emuenv.gxm.display_queue.wait_empty();
 
     return 0;
@@ -2739,6 +2742,7 @@ EXPORT(int, sceGxmEndScene, SceGxmContext *context, SceGxmNotification *vertexNo
     SceGxmNotification empty_notification = { Ptr<uint32_t>(0), 0 };
 
     // Add command to end the scene
+    guest_sched_release_for_block();
     renderer::sync_surface_data(*emuenv.renderer, context->renderer.get(), vertexNotification ? *vertexNotification : empty_notification, fragmentNotification ? *fragmentNotification : empty_notification);
 
     if (context->state.fragment_sync_object) {
@@ -2799,6 +2803,7 @@ EXPORT(int, sceGxmFinish, SceGxmContext *context) {
         return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
 
     // Wait on this context's rendering finish code.
+    guest_sched_release_for_block();
     renderer::finish(*emuenv.renderer, renderer_context, true);
 
     return 0;
@@ -3101,6 +3106,7 @@ EXPORT(int, sceGxmNotificationWait, const SceGxmNotification *notification) {
     std::uint32_t volatile *value = notification->address.get(emuenv.mem);
     const std::uint32_t target_value = notification->value;
 
+    guest_sched_release_for_block();
     std::unique_lock<std::mutex> lock(emuenv.renderer->notification_mutex);
     if (*value != target_value) {
         emuenv.renderer->notification_ready.wait(lock, [&]() { return *value == target_value || emuenv.display.abort.load(); });
@@ -4775,6 +4781,7 @@ EXPORT(int, sceGxmShaderPatcherForceUnregisterProgram, SceGxmShaderPatcher *shad
     }
 
     SceGxmRegisteredProgram *rp = programId.get(emuenv.mem);
+    guest_sched_release_for_block();
     renderer::finish(*emuenv.renderer, nullptr);
     if (emuenv.renderer->render_abort)
         return 0;
@@ -4888,6 +4895,7 @@ EXPORT(int, sceGxmShaderPatcherReleaseFragmentProgram, SceGxmShaderPatcher *shad
     SceGxmFragmentProgram *const fp = fragmentProgram.get(emuenv.mem);
     --fp->reference_count;
     if (fp->reference_count == 0) {
+        guest_sched_release_for_block();
         renderer::finish(*emuenv.renderer, nullptr);
         if (emuenv.renderer->render_abort)
             return 0;
@@ -4912,6 +4920,7 @@ EXPORT(int, sceGxmShaderPatcherReleaseVertexProgram, SceGxmShaderPatcher *shader
     SceGxmVertexProgram *const vp = vertexProgram.get(emuenv.mem);
     --vp->reference_count;
     if (vp->reference_count == 0) {
+        guest_sched_release_for_block();
         renderer::finish(*emuenv.renderer, nullptr);
         if (emuenv.renderer->render_abort)
             return 0;
@@ -4993,6 +5002,7 @@ EXPORT(int, sceGxmSyncObjectDestroy, Ptr<SceGxmSyncObject> syncObject) {
 EXPORT(int, sceGxmTerminate) {
     TRACY_FUNC(sceGxmTerminate);
     // Make sure everything is done in SDL side before killing Vita thread
+    guest_sched_release_for_block();
     emuenv.gxm.display_queue.wait_empty();
     gxm::destroy_all_contexts(emuenv, false);
     gxm::destroy_all_render_targets(emuenv, false);
@@ -5766,6 +5776,7 @@ EXPORT(int, sceGxmTransferFill, uint32_t fillColor, SceGxmTransferFormat destFor
 EXPORT(int, sceGxmTransferFinish) {
     TRACY_FUNC(sceGxmTransferFinish);
     // same as sceGxmFinish
+    guest_sched_release_for_block();
     renderer::finish(*emuenv.renderer, nullptr, true);
 
     return 0;

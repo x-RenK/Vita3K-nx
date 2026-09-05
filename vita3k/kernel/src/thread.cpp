@@ -24,11 +24,16 @@
 
 #include <util/log.h>
 
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 #ifdef __SWITCH__
@@ -46,6 +51,7 @@ extern "C" {
 #endif
 
 void ThreadSignal::wait() {
+    guest_sched_release_for_block();
     std::unique_lock<std::mutex> lock(mutex);
     recv_cond.wait(lock, [&]() { return signaled; });
     signaled = false;
@@ -201,6 +207,267 @@ void ThreadState::exit_delete(bool exit) {
     signal.send();
 }
 
+namespace {
+std::mutex g_sched_mutex;
+std::condition_variable g_sched_cv;
+constexpr size_t GUEST_CORES_MAX = 8;
+constexpr auto SCHED_DEADLINE_WINDOW = std::chrono::milliseconds(2);
+constexpr auto SCHED_MIN_SLICE = std::chrono::microseconds(50);
+constexpr auto SCHED_TIMESLICE = std::chrono::microseconds(250);
+
+thread_local bool tls_holds_token = false;
+thread_local int tls_token_priority = 0;
+thread_local CPUState *tls_token_cpu = nullptr;
+thread_local std::chrono::steady_clock::time_point tls_slice_start;
+
+int g_sched_running = 0;
+struct Holder {
+    CPUState *cpu;
+    int priority;
+    std::chrono::steady_clock::time_point since;
+    const char *name;
+    SceUID id;
+};
+
+std::array<Holder, GUEST_CORES_MAX> g_sched_holders{};
+// Do not "correct" this to 3 because the Vita has 3 cores - use the guest-cores config if you want to test it.
+int g_sched_cores = 1;
+
+std::array<uint16_t, 256> g_sched_waiter_counts{};
+int g_sched_waiters_total = 0;
+std::atomic<int> g_sched_best_waiter{ 256 };
+
+void waiter_add(int priority) {
+    g_sched_waiter_counts[priority]++;
+    g_sched_waiters_total++;
+    if (priority < g_sched_best_waiter.load(std::memory_order_relaxed))
+        g_sched_best_waiter.store(priority, std::memory_order_relaxed);
+}
+
+void waiter_remove(int priority) {
+    g_sched_waiter_counts[priority]--;
+    g_sched_waiters_total--;
+    int best = g_sched_best_waiter.load(std::memory_order_relaxed);
+    if (g_sched_waiters_total == 0) {
+        g_sched_best_waiter.store(256, std::memory_order_relaxed);
+    } else if (priority == best && g_sched_waiter_counts[priority] == 0) {
+        while (best < 256 && g_sched_waiter_counts[best] == 0)
+            best++;
+        g_sched_best_waiter.store(best, std::memory_order_relaxed);
+    }
+}
+
+std::atomic<uint64_t> g_sched_acquires{ 0 };
+std::atomic<uint64_t> g_sched_forced{ 0 };
+std::atomic<uint64_t> g_sched_preempts{ 0 };
+std::atomic<uint64_t> g_sched_wait_us{ 0 };
+std::atomic<uint64_t> g_sched_max_wait_us{ 0 };
+std::atomic<uint64_t> g_sched_fastpath{ 0 };
+std::atomic<uint64_t> g_sched_yield_slice{ 0 };
+std::atomic<uint64_t> g_sched_yield_preempted{ 0 };
+std::atomic<uint64_t> g_sched_yield_block{ 0 };
+std::atomic<uint64_t> g_sched_hold_us{ 0 };
+std::atomic<uint64_t> g_sched_hold_max_us{ 0 };
+std::atomic<int64_t> g_sched_last_report{ 0 };
+
+void sched_report(int64_t now_us) {
+    int64_t last = g_sched_last_report.load(std::memory_order_relaxed);
+    if (last != 0 && now_us - last < 10'000'000)
+        return;
+    if (!g_sched_last_report.compare_exchange_strong(last, now_us))
+        return;
+    if (last == 0)
+        return;
+    const uint64_t acquires = g_sched_acquires.exchange(0);
+    if (acquires == 0)
+        return;
+    const uint64_t fast = g_sched_fastpath.exchange(0);
+    const uint64_t held_us = g_sched_hold_us.exchange(0);
+    LOG_INFO("[GUEST-SCHED] 10s: acquires={} ({:.1f}% uncontended) preempts={} deadline_overrides={} wait_total_ms={:.1f} wait_max_ms={:.2f} | yields slice={} preempt={} block={} | held_total_ms={:.0f} held_avg_us={:.1f} held_max_ms={:.2f}",
+        acquires, acquires ? (100.0 * fast / acquires) : 0.0,
+        g_sched_preempts.exchange(0), g_sched_forced.exchange(0),
+        g_sched_wait_us.exchange(0) / 1000.0, g_sched_max_wait_us.exchange(0) / 1000.0,
+        g_sched_yield_slice.exchange(0), g_sched_yield_preempted.exchange(0), g_sched_yield_block.exchange(0),
+        held_us / 1000.0, acquires ? static_cast<double>(held_us) / acquires : 0.0,
+        g_sched_hold_max_us.exchange(0) / 1000.0);
+}
+
+void sched_acquire(int priority, SceInt32 affinity_mask, bool enabled, CPUState *cpu,
+    const std::string &name, SceUID id) {
+    if (affinity_mask != 0 || !enabled)
+        return;
+    if (tls_holds_token)
+        return; // already ours for the rest of this timeslice
+
+    const auto start = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lock(g_sched_mutex);
+
+    if (g_sched_running < g_sched_cores && g_sched_waiters_total == 0) {
+        g_sched_running++;
+        for (auto &h : g_sched_holders) {
+            if (!h.cpu) {
+                h = { cpu, priority, start, name.c_str(), id };
+                break;
+            }
+        }
+        g_sched_acquires.fetch_add(1, std::memory_order_relaxed);
+        g_sched_fastpath.fetch_add(1, std::memory_order_relaxed);
+        tls_holds_token = true;
+        tls_token_priority = priority;
+        tls_token_cpu = cpu;
+        tls_slice_start = start;
+        return;
+    }
+
+    waiter_add(priority);
+
+    auto preempt_lower = [&](const std::chrono::steady_clock::time_point now) {
+        Holder *victim = nullptr;
+        for (auto &h : g_sched_holders) {
+            if (h.cpu && h.priority > priority && now - h.since >= SCHED_MIN_SLICE && (!victim || h.priority > victim->priority))
+                victim = &h;
+        }
+        if (victim) {
+            stop(*victim->cpu);
+            g_sched_preempts.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    preempt_lower(start);
+
+    const auto deadline = start + SCHED_DEADLINE_WINDOW;
+    while (g_sched_running >= g_sched_cores || g_sched_best_waiter.load(std::memory_order_relaxed) < priority) {
+        if (g_sched_cv.wait_until(lock, deadline) == std::cv_status::timeout) {
+            g_sched_forced.fetch_add(1, std::memory_order_relaxed);
+            static std::atomic<int64_t> last_logged_us{ 0 };
+            const int64_t now_forced_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                                              .count();
+            int64_t prev_logged = last_logged_us.load(std::memory_order_relaxed);
+            if (now_forced_us - prev_logged >= 10'000'000
+                && last_logged_us.compare_exchange_strong(prev_logged, now_forced_us)) {
+                int holder_prio = -1;
+                for (const auto &h : g_sched_holders) {
+                    if (h.cpu)
+                        holder_prio = h.priority;
+                }
+                LOG_WARN("[GUEST-SCHED] \"{}\" (#{} prio {}) forced through after {}ms; holder prio {}", name, id, priority, std::chrono::duration_cast<std::chrono::milliseconds>(SCHED_DEADLINE_WINDOW).count(), holder_prio);
+            }
+            break;
+        }
+        preempt_lower(std::chrono::steady_clock::now());
+    }
+    waiter_remove(priority);
+    g_sched_running++;
+    for (auto &h : g_sched_holders) {
+        if (!h.cpu) {
+            h = { cpu, priority, std::chrono::steady_clock::now(), name.c_str(), id };
+            break;
+        }
+    }
+
+    tls_holds_token = true;
+    tls_token_priority = priority;
+    tls_token_cpu = cpu;
+    tls_slice_start = std::chrono::steady_clock::now();
+
+    const auto waited_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    g_sched_acquires.fetch_add(1, std::memory_order_relaxed);
+    g_sched_wait_us.fetch_add(waited_us, std::memory_order_relaxed);
+    uint64_t prev_max = g_sched_max_wait_us.load(std::memory_order_relaxed);
+    while (waited_us > prev_max && !g_sched_max_wait_us.compare_exchange_weak(prev_max, waited_us)) {
+    }
+}
+
+void sched_release_internal(CPUState *cpu) {
+    const auto held_us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - tls_slice_start).count());
+    g_sched_hold_us.fetch_add(held_us, std::memory_order_relaxed);
+    uint64_t prev_hold = g_sched_hold_max_us.load(std::memory_order_relaxed);
+    while (held_us > prev_hold && !g_sched_hold_max_us.compare_exchange_weak(prev_hold, held_us)) {
+    }
+
+    bool has_waiters;
+    {
+        const std::lock_guard<std::mutex> lock(g_sched_mutex);
+        for (auto &h : g_sched_holders) {
+            if (h.cpu == cpu) {
+                h.cpu = nullptr;
+                break;
+            }
+        }
+        if (g_sched_running > 0)
+            g_sched_running--;
+        has_waiters = g_sched_waiters_total > 0;
+    }
+    tls_holds_token = false;
+    tls_token_cpu = nullptr;
+
+    if (has_waiters)
+        g_sched_cv.notify_all();
+
+    sched_report(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void sched_maybe_yield(SceInt32 affinity_mask, bool enabled, CPUState *cpu) {
+    if (affinity_mask != 0 || !enabled || !tls_holds_token)
+        return;
+
+    const bool slice_over = (std::chrono::steady_clock::now() - tls_slice_start) >= SCHED_TIMESLICE;
+    const bool outranked = !slice_over && g_sched_best_waiter.load(std::memory_order_relaxed) < tls_token_priority;
+    if (slice_over || outranked) {
+        (slice_over ? g_sched_yield_slice : g_sched_yield_preempted).fetch_add(1, std::memory_order_relaxed);
+        sched_release_internal(cpu);
+    }
+}
+} // namespace
+
+void guest_sched_set_cores(int cores) {
+    const std::lock_guard<std::mutex> lock(g_sched_mutex);
+    g_sched_cores = std::clamp(cores, 1, 4); // the Vita has four cores, three for the application
+    if (g_sched_cores != cores)
+        LOG_WARN("[GUEST-SCHED] guest-cores {} out of range, using {}", cores, g_sched_cores);
+    LOG_INFO("[GUEST-SCHED] gate will run at most {} guest thread(s) at a time", g_sched_cores);
+}
+
+void guest_sched_release_for_block() {
+    if (tls_holds_token) {
+        g_sched_yield_block.fetch_add(1, std::memory_order_relaxed);
+        sched_release_internal(tls_token_cpu);
+    }
+}
+
+CPUState *guest_sched_token_cpu() {
+    return tls_holds_token ? tls_token_cpu : nullptr;
+}
+
+void guest_sched_forget_cpu(CPUState *cpu) {
+    if (!cpu)
+        return;
+    bool found = false;
+    bool has_waiters = false;
+    {
+        const std::lock_guard<std::mutex> lock(g_sched_mutex);
+        for (auto &h : g_sched_holders) {
+            if (h.cpu == cpu) {
+                LOG_WARN("[GUEST-SCHED] thread \"{}\" (#{} prio {}) destroyed while still holding the token - a release path is missing",
+                    h.name ? h.name : "?", h.id, h.priority);
+                h.cpu = nullptr;
+                found = true;
+                break;
+            }
+        }
+        if (found && g_sched_running > 0)
+            g_sched_running--;
+        has_waiters = g_sched_waiters_total > 0;
+    }
+    if (tls_token_cpu == cpu) {
+        tls_holds_token = false;
+        tls_token_cpu = nullptr;
+    }
+    if (found && has_waiters)
+        g_sched_cv.notify_all();
+}
+
+
 void ThreadState::run_loop() {
     bool guest_returned = false;
 
@@ -209,6 +476,9 @@ void ThreadState::run_loop() {
         ~CpuStateGuard() { set_current_cpu_state(previous); }
     } cpu_state_guard;
     set_current_cpu_state(cpu.get());
+    struct TokenGuard {
+        ~TokenGuard() { guest_sched_release_for_block(); }
+    } token_guard;
 
     std::unique_lock<std::mutex> lock(mutex);
     ++call_level;
@@ -260,6 +530,7 @@ void ThreadState::run_loop() {
 
         // Park until we have something to do.
         if (status.load(std::memory_order_acquire) != ThreadStatus::run) {
+            guest_sched_release_for_block();
             status_cond.wait(lock, [&] {
                 return status.load(std::memory_order_acquire) == ThreadStatus::run
                     || delete_requested.load(std::memory_order_acquire);
@@ -287,6 +558,8 @@ void ThreadState::run_loop() {
                 single_stepping = false;
 
             lock.unlock();
+            sched_acquire(priority, affinity_mask, kernel.accurate_thread_scheduling, cpu.get(), name, id);
+
             // Single step or run
             const int res = do_step ? step(*cpu) : run(*cpu);
 
@@ -301,6 +574,9 @@ void ThreadState::run_loop() {
                 current_import_nid.store(0, std::memory_order_relaxed);
                 clear_exclusive(*cpu);
             }
+
+            // The token is held across the HLE call; give it up on timeslice or preemption.
+            sched_maybe_yield(affinity_mask, kernel.accurate_thread_scheduling, cpu.get());
 
             // handle pending abort (exception handler from page fault)
             if (cpu->abort_pending.exchange(false))
@@ -425,6 +701,7 @@ uint32_t ThreadState::run_guest_function(Address callback_address, SceSize args,
 
     start(args, argp);
     {
+        guest_sched_release_for_block();
         std::unique_lock<std::mutex> lock(mutex);
         status_cond.wait(lock, [&]() { return status == ThreadStatus::dormant; });
     }
@@ -439,9 +716,16 @@ ThreadState::ThreadState(SceUID id, KernelState &kernel, MemState &mem)
     , mem(mem) {
 }
 
+ThreadState::~ThreadState() {
+    guest_sched_forget_cpu(cpu.get());
+}
+
 void ThreadState::update_status(ThreadStatus status, std::optional<ThreadStatus> expected) {
     if (expected)
         assert(expected.value() == this->status.load(std::memory_order_acquire));
+
+    if (status == ThreadStatus::wait && cpu && cpu.get() == guest_sched_token_cpu())
+        guest_sched_release_for_block();
 
     // Don't apply the requested wait transition if being removed to not block deletion
     if (status == ThreadStatus::wait && delete_requested.load(std::memory_order_acquire))
@@ -469,6 +753,7 @@ void ThreadState::suspend() {
 }
 
 void ThreadState::suspend_and_wait() {
+    guest_sched_release_for_block();
     std::unique_lock<std::mutex> lock(mutex);
     vm_suspended = true;
 

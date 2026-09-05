@@ -60,6 +60,10 @@ struct Config {
      */
     struct CurrentConfig {
         bool cpu_opt = true;
+        bool accurate_thread_scheduling = false;
+        bool preempt_on_wake = false;
+        int preempt_on_wake_us = 1000;
+        int guest_cores = 3;
         bool switch_lsfg_enabled = false;
         float switch_lsfg_flow_scale = 0.25f;
         bool switch_lsfg_performance = true;

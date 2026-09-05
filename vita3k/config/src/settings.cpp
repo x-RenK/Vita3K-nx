@@ -32,6 +32,10 @@ namespace {
 
 void copy_global_to_current(Config::CurrentConfig &current, const Config &cfg) {
     current.cpu_opt = cfg.cpu_opt;
+    current.accurate_thread_scheduling = cfg.accurate_thread_scheduling;
+    current.preempt_on_wake = cfg.preempt_on_wake;
+    current.preempt_on_wake_us = cfg.preempt_on_wake_us;
+    current.guest_cores = cfg.guest_cores;
     current.switch_lsfg_enabled = cfg.switch_lsfg_enabled;
     current.switch_lsfg_flow_scale = cfg.switch_lsfg_flow_scale;
     current.switch_lsfg_performance = cfg.switch_lsfg_performance;
@@ -83,6 +87,10 @@ void copy_global_to_current(Config::CurrentConfig &current, const Config &cfg) {
 
 void copy_current_to_global(Config &cfg, const Config::CurrentConfig &current) {
     cfg.cpu_opt = current.cpu_opt;
+    cfg.accurate_thread_scheduling = current.accurate_thread_scheduling;
+    cfg.preempt_on_wake = current.preempt_on_wake;
+    cfg.preempt_on_wake_us = current.preempt_on_wake_us;
+    cfg.guest_cores = current.guest_cores;
     cfg.switch_lsfg_enabled = current.switch_lsfg_enabled;
     cfg.switch_lsfg_flow_scale = current.switch_lsfg_flow_scale;
     cfg.switch_lsfg_performance = current.switch_lsfg_performance;
@@ -157,6 +165,9 @@ std::vector<RestartRequiredSetting> get_restart_required_settings(
     append_if_changed(before.validation_layer != after.validation_layer, RestartRequiredSetting::ValidationLayer);
     append_if_changed(before.spirv_shader != after.spirv_shader, RestartRequiredSetting::SpirvShader);
     append_if_changed(before.force_full_precision != after.force_full_precision, RestartRequiredSetting::FullPrecision);
+    append_if_changed(before.accurate_thread_scheduling != after.accurate_thread_scheduling
+            || before.preempt_on_wake != after.preempt_on_wake || before.guest_cores != after.guest_cores,
+        RestartRequiredSetting::AccurateThreadScheduling);
 
     return changed;
 }

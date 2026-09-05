@@ -206,6 +206,12 @@ static Config::CurrentConfig get_runtime_current_config_after_save(
         case config::RestartRequiredSetting::CpuOpt:
             runtime_current.cpu_opt = previous_current.cpu_opt;
             break;
+        case config::RestartRequiredSetting::AccurateThreadScheduling:
+            runtime_current.accurate_thread_scheduling = previous_current.accurate_thread_scheduling;
+            runtime_current.preempt_on_wake = previous_current.preempt_on_wake;
+            runtime_current.preempt_on_wake_us = previous_current.preempt_on_wake_us;
+            runtime_current.guest_cores = previous_current.guest_cores;
+            break;
         case config::RestartRequiredSetting::BackendRenderer:
             runtime_current.backend_renderer = previous_current.backend_renderer;
             break;
