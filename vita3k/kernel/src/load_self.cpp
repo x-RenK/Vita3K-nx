@@ -25,6 +25,9 @@
 #include <mem/functions.h>
 #include <nids/functions.h>
 #include <util/arm.h>
+#ifdef __SWITCH__
+#include <util/hash.h>
+#endif
 
 #include <map>
 #include <vector>
@@ -55,6 +58,60 @@ static constexpr uint32_t NID_SYSLYB = 0x936c8a78;
 static constexpr uint32_t NID_PROCESS_PARAM = 0x70FBA1E7;
 
 static constexpr bool LOG_MODULE_LOADING = false;
+
+#ifdef __SWITCH__
+static constexpr uint32_t UNCHARTED_JOB_DRAIN_CODE_SIZE = 44;
+
+static void fix_uncharted_job_drain(KernelState &kernel, MemState &mem, Address base, uint32_t size, Block &storage) {
+    if (size < 0x3869D4)
+        return;
+    const auto code = Ptr<uint8_t>(base).get(mem);
+    if (hex_string(sha256(code + 0x38412E, 0x2A6)) != "716f900cc2f9ca39d6b4ac6d4cbd638e865ad5a92a07b2894a3c20d9f0812b98"
+        || hex_string(sha256(code + 0x386722, 0x2B2)) != "a3a3365b331fbedcfe7540d73a1ad67de2c76ed4d86534f7a9260eb92bf54829") {
+        LOG_INFO("[COMPAT] Uncharted job drain signature differs; executable unchanged");
+        return;
+    }
+
+    const Address address = alloc(mem, UNCHARTED_JOB_DRAIN_CODE_SIZE, "Uncharted job drain", base);
+    if (!address) {
+        LOG_ERROR("[COMPAT] Cannot allocate Uncharted job drain code");
+        return;
+    }
+    Block thunk(address, [&mem](Address address) { free(mem, address); });
+    const Address call = base + 0x384284;
+    const int64_t displacement = int64_t{ address } - call - 4;
+    if ((displacement & 1) || displacement < -0x1000000 || displacement >= 0x1000000) {
+        LOG_ERROR("[COMPAT] Uncharted job drain code is out of branch range");
+        return;
+    }
+
+    // The drain removes the global link but leaves grouped jobs ready for workers.
+    // Move that link to the active list before the executor releases the lock.
+    const std::array<uint16_t, 20> claim = {
+        0xB403, 0x6A48, 0xB150, 0x6C4A, 0x6C8B, 0x601A, 0x6053,
+        0x3144, 0x303C, 0x6802, 0x6051, 0x600A, 0x6048, 0x6001,
+        0x9901, 0x2002, 0x8108, 0xBC03, 0xF8DF, 0xF000
+    };
+    auto target = Ptr<uint8_t>(address).get(mem);
+    memcpy(target, claim.data(), sizeof(claim));
+    const Address executor = (base + 0x38412E) | 1;
+    memcpy(target + sizeof(claim), &executor, sizeof(executor));
+
+    const uint32_t immediate = static_cast<uint32_t>(displacement);
+    const uint32_t sign = (immediate >> 24) & 1;
+    const uint32_t j1 = 1 ^ ((immediate >> 23) & 1) ^ sign;
+    const uint32_t j2 = 1 ^ ((immediate >> 22) & 1) ^ sign;
+    const uint16_t branch[] = {
+        static_cast<uint16_t>(0xF000 | (sign << 10) | ((immediate >> 12) & 0x3FF)),
+        static_cast<uint16_t>(0xD000 | (j1 << 13) | (j2 << 11) | ((immediate >> 1) & 0x7FF))
+    };
+    kernel.invalidate_jit_cache(address, UNCHARTED_JOB_DRAIN_CODE_SIZE);
+    memcpy(Ptr<uint8_t>(call).get(mem), branch, sizeof(branch));
+    kernel.invalidate_jit_cache(call, sizeof(branch));
+    LOG_INFO("[COMPAT] Uncharted job drain claims grouped jobs before execution (call {}, code {})", log_hex(call), log_hex(address));
+    storage = std::move(thunk);
+}
+#endif
 
 struct VarImportsHeader {
     uint32_t unk : 4; // Must be zero
@@ -799,6 +856,10 @@ SceUID load_self(KernelState &kernel, MemState &mem, const void *self, const std
     constexpr uint32_t ELF_PF_X = 1;
     for (const auto &[index, segment] : segment_reloc_info) {
         if ((segments[index].p_flags & ELF_PF_X) && segments[index].p_filesz <= segment.size) {
+#ifdef __SWITCH__
+            if (self_path == "app0:uncharted.self" && index == 0)
+                fix_uncharted_job_drain(kernel, mem, segment.addr, segments[index].p_filesz, kernelModuleInfo->job_drain_code);
+#endif
             const auto fixed = fix_pthread_semaphore_post({ Ptr<uint8_t>(segment.addr).get(mem), segments[index].p_filesz }, segment.addr, signal_imports);
             if (fixed) {
                 kernel.invalidate_jit_cache(segment.addr, segments[index].p_filesz);
@@ -841,6 +902,13 @@ int unload_self(KernelState &kernel, MemState &mem, KernelModule &module) {
     }
 
     SceUID mod_nid = module_info->module_nid;
+
+#ifdef __SWITCH__
+    if (module.job_drain_code) {
+        kernel.invalidate_jit_cache(module.job_drain_code.get(), UNCHARTED_JOB_DRAIN_CODE_SIZE);
+        module.job_drain_code = nullptr;
+    }
+#endif
 
     // last step: free the memory
     for (int i = 0; i < MODULE_INFO_NUM_SEGMENTS; i++) {

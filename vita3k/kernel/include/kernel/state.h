@@ -51,6 +51,9 @@ struct KernelModule {
     SceKernelModuleInfo info;
     Ptr<const uint8_t> info_segment_address;
     uint32_t info_offset;
+#ifdef __SWITCH__
+    Block job_drain_code;
+#endif
 };
 typedef std::shared_ptr<KernelModule> SceKernelModulePtr;
 
