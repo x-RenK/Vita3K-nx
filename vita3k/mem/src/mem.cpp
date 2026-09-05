@@ -144,6 +144,8 @@ static uint32_t switch_pool_alloc_run(uint32_t n) {
 
 // Return run [start, start+n) to the free set, coalescing with adjacent runs.
 static void switch_pool_free_run(uint32_t start, uint32_t n) {
+    // Coalescing grows `n` into the combined run; only the caller's pages become free.
+    const uint32_t newly_freed = n;
     auto it = g_switch_pool_runs.lower_bound(start);
     if (it != g_switch_pool_runs.begin()) {
         auto prev = std::prev(it);
@@ -159,7 +161,7 @@ static void switch_pool_free_run(uint32_t start, uint32_t n) {
         g_switch_pool_runs.erase(succ);
     }
     g_switch_pool_runs[start] = n;
-    g_switch_pool_free_pages += n;
+    g_switch_pool_free_pages += newly_freed;
 }
 
 // Permanently remove a single pool slot from the free set (splitting its run). Used
@@ -1057,10 +1059,16 @@ void add_external_mapping(MemState &mem, Address addr, uint32_t size, uint8_t *a
     }
 #endif
 
+#ifdef __SWITCH__
+    // protect_inner is advisory here, so it never reads the entry; publishing the flat
+    // one would briefly expose a page outside the pool to another thread's JIT.
+    protect_inner(mem, addr, size, MemPerm::None);
+#else
     // set the first page table entry to the original value to be able to call protect_inner
     mem.page_table[addr / KiB(4)] = mem.memory.get();
     protect_inner(mem, addr, size, MemPerm::None);
     mem.page_table[addr / KiB(4)] = page_table_entry;
+#endif
 
     const std::unique_lock<std::mutex> lock(mem.protect_mutex);
     MemExternalMapping mapping{ addr, size, original_entry };
