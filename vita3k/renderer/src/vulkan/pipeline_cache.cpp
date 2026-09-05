@@ -101,6 +101,7 @@ struct CompileRequest {
     bool fragment_is_maskupdate;
     VKFragmentProgram fragment_renderer_data;
     shader::Hints hints;
+    bool has_casts;
 
     // the content of the record useful for the pipeline creation
     alignas(8) uint8_t record_data[record_pipeline_len];
@@ -525,42 +526,36 @@ void PipelineCache::cleanup() {
     nb_worker_threads = 0;
 }
 
-// Vulkan structs used to specify a specialization constant
+// Vulkan structs used to specify the fragment specialization constants
 // Also, booleans in SPIRV are 32bit wide
-static const vk::SpecializationMapEntry srgb_entry = {
-    .constantID = shader::GAMMA_CORRECTION_SPECIALIZATION_ID,
-    .offset = 0,
-    .size = sizeof(uint32_t)
+static const vk::SpecializationMapEntry frag_spec_entries[] = {
+    { .constantID = shader::GAMMA_CORRECTION_SPECIALIZATION_ID, .offset = 0, .size = sizeof(uint32_t) },
+    { .constantID = shader::SURFACE_CAST_SPECIALIZATION_ID, .offset = sizeof(uint32_t), .size = sizeof(uint32_t) },
 };
 
-static const uint32_t srgb_entry_true = vk::True;
-static const uint32_t srgb_entry_false = vk::False;
-
-static const vk::SpecializationInfo srgb_info_true = {
-    .mapEntryCount = 1,
-    .pMapEntries = &srgb_entry,
-    .dataSize = sizeof(uint32_t),
-    .pData = &srgb_entry_true
+// indexed by (is_srgb << 1) | has_casts
+static const uint32_t frag_spec_data[4][2] = {
+    { vk::False, vk::False },
+    { vk::False, vk::True },
+    { vk::True, vk::False },
+    { vk::True, vk::True },
 };
 
-static const vk::SpecializationInfo srgb_info_false = {
-    .mapEntryCount = 1,
-    .pMapEntries = &srgb_entry,
-    .dataSize = sizeof(uint32_t),
-    .pData = &srgb_entry_false
+static const vk::SpecializationInfo frag_spec_infos[4] = {
+    { .mapEntryCount = 2, .pMapEntries = frag_spec_entries, .dataSize = sizeof(frag_spec_data[0]), .pData = frag_spec_data[0] },
+    { .mapEntryCount = 2, .pMapEntries = frag_spec_entries, .dataSize = sizeof(frag_spec_data[1]), .pData = frag_spec_data[1] },
+    { .mapEntryCount = 2, .pMapEntries = frag_spec_entries, .dataSize = sizeof(frag_spec_data[2]), .pData = frag_spec_data[2] },
+    { .mapEntryCount = 2, .pMapEntries = frag_spec_entries, .dataSize = sizeof(frag_spec_data[3]), .pData = frag_spec_data[3] },
 };
 
-vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmProgram *program, const Sha256Hash &hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb) {
+vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmProgram *program, const Sha256Hash &hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb, bool has_casts) {
     if (maskupdate)
         LOG_WARN_ONCE("Mask not implemented in the vulkan renderer!");
 
     const vk::ShaderModule shader_compiling = std::bit_cast<vk::ShaderModule>(~0ULL);
 
-    const vk::SpecializationInfo *spec_info = nullptr;
-    if (!is_vertex && state.features.should_use_shader_interlock() && program->is_frag_color_used()) {
-        // if the specialization constant is used in the shader
-        spec_info = is_srgb ? &srgb_info_true : &srgb_info_false;
-    }
+    // entries for constants a module does not declare are ignored
+    const vk::SpecializationInfo *spec_info = is_vertex ? nullptr : &frag_spec_infos[(is_srgb ? 2 : 0) | (has_casts ? 1 : 0)];
 
     vk::ShaderModule *shader_module;
     {
@@ -944,7 +939,7 @@ void PipelineCache::compiler_thread(MemState &mem) {
 
         const PipelineVertexProgram vertex_program = request->get_vertex_program();
         const PipelineFragmentProgram fragment_program = request->get_fragment_program();
-        vk::Pipeline pipeline = compile_pipeline(request->type, request->render_pass, vertex_program, fragment_program, *request->get_record(), request->hints, mem);
+        vk::Pipeline pipeline = compile_pipeline(request->type, request->render_pass, vertex_program, fragment_program, *request->get_record(), request->hints, request->has_casts, mem);
         *request->pipeline = pipeline;
 
         const auto time_s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -965,7 +960,7 @@ static vk::StencilOpState convert_op_state(const GxmStencilStateOp &state) {
     };
 }
 
-vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const PipelineVertexProgram &vertex_program_gxm, const PipelineFragmentProgram &fragment_program_gxm, const GxmRecordState &record, const shader::Hints &hints, MemState &mem) {
+vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const PipelineVertexProgram &vertex_program_gxm, const PipelineFragmentProgram &fragment_program_gxm, const GxmRecordState &record, const shader::Hints &hints, bool has_casts, MemState &mem) {
     const VertexProgram &vertex_program = vertex_program_gxm.renderer_data;
     const SceGxmProgram *gxm_fragment_shader = &fragment_program_gxm.program;
     const VKFragmentProgram &fragment_program = fragment_program_gxm.renderer_data;
@@ -974,7 +969,7 @@ vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::Rende
     const vk::PipelineVertexInputStateCreateInfo vertex_input = get_vertex_input_state(vertex_program_gxm, mem);
 
     const vk::PipelineShaderStageCreateInfo vertex_shader = retrieve_shader(vertex_program_gxm.program, vertex_program.hash, true, fragment_program_gxm.is_maskupdate, mem, hints);
-    const vk::PipelineShaderStageCreateInfo fragment_shader = retrieve_shader(gxm_fragment_shader, fragment_program.hash, false, fragment_program_gxm.is_maskupdate, mem, hints, record.is_gamma_corrected);
+    const vk::PipelineShaderStageCreateInfo fragment_shader = retrieve_shader(gxm_fragment_shader, fragment_program.hash, false, fragment_program_gxm.is_maskupdate, mem, hints, record.is_gamma_corrected, has_casts);
     const vk::PipelineShaderStageCreateInfo shader_stages[] = { vertex_shader, fragment_shader };
     // disable the fragment shader if gxm asks us to
     const bool is_fragment_disabled = record.front_side_fragment_program_mode == SCE_GXM_FRAGMENT_PROGRAM_DISABLED || gxm_fragment_shader->has_no_effect();
@@ -1100,6 +1095,12 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
     if (render_pass_has_raw_attachment(context.current_render_pass))
         key ^= 0x9E3779B97F4A7C15ull;
 
+    // the cast paths are specialized out when no sampled unit holds a cast
+    const uint32_t cast_units = context.curr_frag_ublock.cast_sampler_bits | context.curr_frag_ublock.raw_cast_bits;
+    const bool has_casts = (cast_units & fragment_program.textures_used.to_ulong()) != 0;
+    if (has_casts)
+        key ^= 0xC2B2AE3D27D4EB4Full;
+
     // add the hash of the attribute and stream layout
     SceGxmVertexProgram &vertex_program_gxm = *record.vertex_program.get(mem);
     key ^= vertex_program_gxm.key_hash;
@@ -1161,6 +1162,7 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
         request->fragment_renderer_data = fragment_program_view.renderer_data;
         request->hints = context.shader_hints;
         request->hints.attributes = &request->vertex_attributes;
+        request->has_casts = has_casts;
         memcpy(request->record_data, &record, record_pipeline_len);
         it->second = pipeline_compiling;
 
@@ -1169,7 +1171,7 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
         return nullptr;
     } else {
         // can't wait, compile it right now
-        vk::Pipeline result = compile_pipeline(type, render_pass, vertex_program, fragment_program_view, record, context.shader_hints, mem);
+        vk::Pipeline result = compile_pipeline(type, render_pass, vertex_program, fragment_program_view, record, context.shader_hints, has_casts, mem);
 
         const auto time_s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         next_pipeline_cache_save = time_s + pipeline_cache_save_delay;

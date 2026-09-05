@@ -116,6 +116,8 @@ struct SpirvShaderParameters {
 
     // When using shader interlock, specialization constant telling us if the texture is gamma corrected
     spv::Id is_srgb_constant;
+    // Specialization constant enabling the surface cast texture paths
+    spv::Id has_surface_casts_constant = 0;
 };
 
 using Coord = std::pair<spv::Id, int>;

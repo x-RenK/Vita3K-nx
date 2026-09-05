@@ -93,7 +93,7 @@ private:
     unordered_map_stable<Sha256Hash, vk::ShaderModule> shaders;
     unordered_map_stable<uint64_t, vk::Pipeline> pipelines;
 
-    vk::PipelineShaderStageCreateInfo retrieve_shader(const SceGxmProgram *program, const Sha256Hash &hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb = false);
+    vk::PipelineShaderStageCreateInfo retrieve_shader(const SceGxmProgram *program, const Sha256Hash &hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb = false, bool has_casts = false);
     bool needs_attribute_bindings(const PipelineVertexProgram &vertex_program) const;
     vk::PipelineVertexInputStateCreateInfo get_vertex_input_state(const PipelineVertexProgram &vertex_program, MemState &mem);
 
@@ -105,7 +105,7 @@ private:
     // each pipeline compiler thread uses this function as its entrypoint
     void compiler_thread(MemState &mem);
 
-    vk::Pipeline compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const PipelineVertexProgram &vertex_program_gxm, const PipelineFragmentProgram &fragment_program_gxm, const GxmRecordState &record, const shader::Hints &hints, MemState &mem);
+    vk::Pipeline compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const PipelineVertexProgram &vertex_program_gxm, const PipelineFragmentProgram &fragment_program_gxm, const GxmRecordState &record, const shader::Hints &hints, bool has_casts, MemState &mem);
 
 public:
     // if not 0, next time the pipeline cache should be saved (in seconds since epoch)

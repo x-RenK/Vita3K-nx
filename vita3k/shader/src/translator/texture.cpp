@@ -90,13 +90,18 @@ spv::Id shader::usse::USSETranslatorVisitor::do_fetch_texture(const spv::Id tex,
     // offsets around gl_FragCoord; zero offsets select this view's word, while
     // larger offsets remain unchanged.
     constexpr int cast_mask_width = 16;
-    if (dim == 2 && m_spirv_params.frag_coord_id != spv::NoResult
+    if (dim == 2 && m_spirv_params.has_surface_casts_constant != spv::NoResult
+        && m_spirv_params.frag_coord_id != spv::NoResult
         && m_spirv_params.render_info_id != spv::NoResult
         && texture_index >= 0 && texture_index < cast_mask_width) {
         spv::Id coord_xy = coord_id;
         const bool has_extra_comps = m_b.getNumComponents(coord_id) > 2;
         if (has_extra_comps)
             coord_xy = m_b.createOp(spv::OpVectorShuffle, type_f32_v[2], { { true, coord_id }, { true, coord_id }, { false, 0 }, { false, 1 } });
+
+        const spv::Id cast_coord = m_b.createVariable(spv::NoPrecision, spv::StorageClassFunction, type_f32_v[2], "cast_coord");
+        m_b.createStore(coord_xy, cast_coord);
+        spv::Builder::If cast_branch(m_spirv_params.has_surface_casts_constant, spv::SelectionControlMaskNone, m_b);
 
         const auto load_frag_uniform = [&](FragUniformFieldId field) {
             const spv::Id ptr = utils::create_access_chain(m_b, spv::StorageClassUniform, m_spirv_params.render_info_id, { m_b.makeIntConstant(field) });
@@ -118,6 +123,7 @@ spv::Id shader::usse::USSETranslatorVisitor::do_fetch_texture(const spv::Id tex,
         const spv::Id unit_is_cast = m_b.createBinOp(spv::OpINotEqual, type_bool, bit, m_b.makeUintConstant(0));
         const spv::Id not_1x = m_b.createBinOp(spv::OpFUnordNotEqual, type_bool, res_mult, m_b.makeFloatConstant(1.0f));
         const spv::Id active = m_b.createBinOp(spv::OpLogicalAnd, type_bool, unit_is_cast, not_1x);
+        spv::Builder::If active_branch(active, spv::SelectionControlMaskNone, m_b);
 
         // screen_uv = gl_FragCoord.xy * inv_size
         const spv::Id frag_coord = m_b.createLoad(m_spirv_params.frag_coord_id, spv::NoPrecision);
@@ -165,14 +171,16 @@ spv::Id shader::usse::USSETranslatorVisitor::do_fetch_texture(const spv::Id tex,
         const spv::Id has_offset = m_b.createBinOp(spv::OpFOrdGreaterThan, type_bool, adx, eps);
         const spv::Id reanchor_ok = m_b.createBinOp(spv::OpFOrdLessThanEqual, type_bool, adx, threshold);
         const spv::Id x_offset_path = m_b.createTriOp(spv::OpSelect, type_f32, reanchor_ok, adj_x, coord_x);
-        const spv::Id x_active = m_b.createTriOp(spv::OpSelect, type_f32, has_offset, x_offset_path, snapped_x);
-        const spv::Id new_x = m_b.createTriOp(spv::OpSelect, type_f32, active, x_active, coord_x);
+        const spv::Id new_x = m_b.createTriOp(spv::OpSelect, type_f32, has_offset, x_offset_path, snapped_x);
 
-        spv::Id y_ok = m_b.createBinOp(spv::OpFOrdLessThanEqual, type_bool, ady, threshold);
-        y_ok = m_b.createBinOp(spv::OpLogicalAnd, type_bool, y_ok, active);
+        const spv::Id y_ok = m_b.createBinOp(spv::OpFOrdLessThanEqual, type_bool, ady, threshold);
         const spv::Id new_y = m_b.createTriOp(spv::OpSelect, type_f32, y_ok, adj_y, coord_y);
 
-        const spv::Id new_xy = m_b.createCompositeConstruct(type_f32_v[2], { new_x, new_y });
+        m_b.createStore(m_b.createCompositeConstruct(type_f32_v[2], { new_x, new_y }), cast_coord);
+        active_branch.makeEndIf();
+        cast_branch.makeEndIf();
+
+        const spv::Id new_xy = m_b.createLoad(cast_coord, spv::NoPrecision);
 
         if (has_extra_comps) {
             if (m_b.getNumComponents(coord_id) == 3)
@@ -250,17 +258,19 @@ spv::Id shader::usse::USSETranslatorVisitor::do_fetch_texture(const spv::Id tex,
 
     image_sample = m_b.createOp(op, type_f32_v[4], params);
 
-    if (m_spirv_params.frag_coord_id != spv::NoResult && m_spirv_params.render_info_id != spv::NoResult
+    if (m_spirv_params.has_surface_casts_constant != spv::NoResult
+        && m_spirv_params.frag_coord_id != spv::NoResult && m_spirv_params.render_info_id != spv::NoResult
         && texture_index >= 0 && texture_index < SCE_GXM_MAX_TEXTURE_UNITS) {
         const spv::Id u32 = m_b.makeUintType(32);
         const spv::Id uvec4 = m_b.makeVectorType(u32, 4);
         const spv::Id bool_type = m_b.makeBoolType();
+        const spv::Id result = m_b.createVariable(spv::NoPrecision, spv::StorageClassFunction, type_f32_v[4], "raw_cast_result");
+        m_b.createStore(image_sample, result);
+        spv::Builder::If cast_branch(m_spirv_params.has_surface_casts_constant, spv::SelectionControlMaskNone, m_b);
         const spv::Id mask_ptr = utils::create_access_chain(m_b, spv::StorageClassUniform, m_spirv_params.render_info_id, { m_b.makeIntConstant(FRAG_UNIFORM_raw_cast_mask) });
         const spv::Id mask = m_b.createUnaryOp(spv::OpConvertFToU, u32, m_b.createLoad(mask_ptr, spv::NoPrecision));
         const spv::Id bit = m_b.createBinOp(spv::OpBitwiseAnd, u32, mask, m_b.makeUintConstant(1u << texture_index));
         const spv::Id is_raw = m_b.createBinOp(spv::OpINotEqual, bool_type, bit, m_b.makeUintConstant(0));
-        const spv::Id result = m_b.createVariable(spv::NoPrecision, spv::StorageClassFunction, type_f32_v[4], "raw_cast_result");
-        m_b.createStore(image_sample, result);
         spv::Builder::If raw_branch(is_raw, spv::SelectionControlMaskNone, m_b);
 
         const auto unpack_halves = [&](spv::Id sample) {
@@ -294,6 +304,7 @@ spv::Id shader::usse::USSETranslatorVisitor::do_fetch_texture(const spv::Id tex,
 
         m_b.createStore(rebuilt, result);
         raw_branch.makeEndIf();
+        cast_branch.makeEndIf();
         image_sample = m_b.createLoad(result, spv::NoPrecision);
     }
 
