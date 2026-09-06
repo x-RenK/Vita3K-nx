@@ -729,19 +729,46 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
     const uint32_t width = static_cast<uint32_t>(original_width * state.res_multiplier);
     const uint32_t height = static_cast<uint32_t>(original_height * state.res_multiplier);
 
-    bool overlap = true;
-    // Of course, this works under the assumption that range must be unique :D
+    uint32_t stride_bytes = 0;
+    SurfaceTiling tiling = SurfaceTiling::Swizzled;
+    if (texture.texture_type() == SCE_GXM_TEXTURE_LINEAR_STRIDED) {
+        stride_bytes = gxm::get_stride_in_bytes(texture);
+        tiling = SurfaceTiling::Linear;
+    } else {
+        uint32_t pixel_stride = original_width;
+        switch (texture.texture_type()) {
+        case SCE_GXM_TEXTURE_LINEAR:
+            // when the texture is linear, the stride should be aligned to 8 pixels
+            tiling = SurfaceTiling::Linear;
+            pixel_stride = align(pixel_stride, 8);
+            break;
+        case SCE_GXM_TEXTURE_TILED:
+            // tiles are 32x32
+            tiling = SurfaceTiling::Tiled;
+            pixel_stride = align(pixel_stride, 32);
+            break;
+        case SCE_GXM_TEXTURE_SWIZZLED_ARBITRARY:
+            pixel_stride = next_power_of_two(pixel_stride);
+            break;
+        default:
+            break;
+        }
+        stride_bytes = pixel_stride * gxm::bits_per_pixel(base_format) / 8;
+    }
+    uint32_t total_surface_size = stride_bytes * original_height;
+
+    // Overlapping surfaces can use different layouts for the same guest memory.
     auto ite = color_address_lookup.upper_bound(address);
-    if (ite == color_address_lookup.begin())
-        // no match
-        overlap = false;
-    else
+    bool found = false;
+    while (ite != color_address_lookup.begin()) {
         --ite;
-    // ite is now the first item with an address lower or equal to key
-
-    overlap = (overlap && (ite->first + ite->second->total_bytes) > address);
-
-    if (!overlap)
+        if (uint64_t(ite->first) + ite->second->total_bytes > address
+            && ite->second->tiling == tiling && ite->second->stride_bytes == stride_bytes) {
+            found = true;
+            break;
+        }
+    }
+    if (!found)
         return std::nullopt;
 
 #ifdef __SWITCH__
@@ -771,44 +798,11 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
         }
     }
 
-    uint32_t stride_bytes = 0;
-    SurfaceTiling tiling = SurfaceTiling::Swizzled;
-    if (texture.texture_type() == SCE_GXM_TEXTURE_LINEAR_STRIDED) {
-        stride_bytes = gxm::get_stride_in_bytes(texture);
-        tiling = SurfaceTiling::Linear;
-    } else {
-        uint32_t pixel_stride = original_width;
-        switch (texture.texture_type()) {
-        case SCE_GXM_TEXTURE_LINEAR:
-            // when the texture is linear, the stride should be aligned to 8 pixels
-            tiling = SurfaceTiling::Linear;
-            pixel_stride = align(pixel_stride, 8);
-            break;
-        case SCE_GXM_TEXTURE_TILED:
-            // tiles are 32x32
-            tiling = SurfaceTiling::Tiled;
-            pixel_stride = align(pixel_stride, 32);
-            break;
-        case SCE_GXM_TEXTURE_SWIZZLED_ARBITRARY:
-            pixel_stride = next_power_of_two(pixel_stride);
-            break;
-        default:
-            break;
-        }
-        stride_bytes = pixel_stride * gxm::bits_per_pixel(base_format) / 8;
-    }
-    uint32_t total_surface_size = stride_bytes * original_height;
-
     ColorSurfaceCacheInfo &info = *ite->second;
 
     if ((base_format == SCE_GXM_COLOR_BASE_FORMAT_U8U8U8 || info.format == SCE_GXM_COLOR_BASE_FORMAT_U8U8U8)
         && base_format != info.format)
         // don't even try to match u8u8u8 with something else
-        return std::nullopt;
-
-    if (tiling != info.tiling || info.stride_bytes != stride_bytes)
-        // if the tiling is different, also don't try to match them
-        // about the strides, I've yet to see a case where the byte stride is different
         return std::nullopt;
 
     // Check if we can use this surface
