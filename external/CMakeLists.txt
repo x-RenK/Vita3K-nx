@@ -83,6 +83,10 @@ add_subdirectory(libfat16)
 add_library(miniz STATIC miniz/miniz.c miniz/miniz.h)
 target_include_directories(miniz PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/miniz")
 
+if(SWITCH)
+	add_subdirectory(sevenzip)
+endif()
+
 add_subdirectory(sdl)
 
 # Cubeb setup, from https://github.com/RPCS3/rpcs3/blob/master/3rdparty/cubeb/CMakeLists.txt

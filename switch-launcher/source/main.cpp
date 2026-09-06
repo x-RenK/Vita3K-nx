@@ -2903,8 +2903,8 @@ static bool importFileType(const std::string &name,ImportKind kind,ImportFileTyp
     if(type)*type=ImportFileType::License;
     return true;
   }
-  // Homebrew and repacks: install_archive handles .vpk/.zip and dispatches .vci.
-  if(extension==".vpk"||extension==".zip"||extension==".vci"){
+  // Game archives are handled by the emulator installer.
+  if(extension==".vpk"||extension==".zip"||extension==".7z"||extension==".vci"){
     if(type)*type=ImportFileType::Archive;
     return true;
   }
@@ -3145,12 +3145,12 @@ static bool validateImportFile(const std::string &path,ImportFileType type,long 
   } else if(type==ImportFileType::License){
     if(fileStat.st_size!=512){error="A Vita work.bin/.rif license must be exactly 512 bytes.";return false;}
   } else if(type==ImportFileType::Archive){
-    // .vpk and .zip are ZIP containers; a .vci carries its own header, which the
-    // emulator validates, so only reject something that is clearly neither.
     const bool zip=read>=4&&header[0]=='P'&&header[1]=='K'&&
                    (header[2]==0x03||header[2]==0x05||header[2]==0x07);
-    if(!zip&&fileExtensionLower(lowerAscii(path))!=".vci"){
-      error="The selected file is not a readable .vpk/.zip archive.";return false;
+    const bool sevenZip=read>=6&&memcmp(header,"7z\xBC\xAF\x27\x1C",6)==0;
+    const std::string extension=fileExtensionLower(path);
+    if(extension!=".vci"&&!(extension==".7z"?sevenZip:zip)){
+      error="The selected file is not a readable Vita archive.";return false;
     }
   } else if(read<5||memcmp(header,"SCEUF",5)!=0||fileStat.st_size<(1<<20)||
             fileStat.st_size>(512LL<<20)){
@@ -3537,7 +3537,7 @@ static bool browseStorageFile(ImportKind kind,ImportSelection &selection){
       }
     }
     if(n==0) drawTextC(g_font,SW/2,listY0+rowH,
-      kind==ImportKind::FirmwarePup?"No folders or .pup files here":"No Vita .pkg, .vpk, .zip, .vci or license files here",COL_DIM);
+      kind==ImportKind::FirmwarePup?"No folders or .pup files here":"No Vita .pkg, .vpk, .zip, .7z, .vci or license files here",COL_DIM);
     if(n>vis){                                    // slim scrollbar (matches settings)
       int trH=vis*rowH, trX=colX+colW+16, trY=listY0-2;
       fillRect(trX,trY,4,trH,(SDL_Color){40,44,54,255});
@@ -3630,7 +3630,7 @@ static bool stagePackageOrLicense(const ImportSelection &selected){
     // A game archive from a download site is usually a .pkg in a zip, which needs
     // a license just like a bare .pkg. Reading the zip's index is quick even for a
     // multi-gigabyte file, so ask now rather than after a long unpack.
-    const ArchiveContents contents=archive_inspect(selected.path);
+    const ArchiveContents contents=fileExtensionLower(selected.path)==".7z"?ArchiveContents{}:archive_inspect(selected.path);
     if(contents.readable&&contents.package&&!contents.license&&!contents.app_content){
       ImportStageFile companion;
       if(!findCompanionLicense(selected,companion)&&!offerZrifForPackage(zrifStaged))return false;
@@ -4475,7 +4475,7 @@ static bool browserActions(const BrowserItem &item){
     if(importFileType(item.label,ImportKind::PackageLicense,&importType)){
       installable=true;actions.push_back(Install);
       labels.push_back(importType==ImportFileType::Package?"Install Vita package"
-        :importType==ImportFileType::Archive?"Install Vita app (VPK)"
+        :importType==ImportFileType::Archive?(fileExtensionLower(item.path)==".vpk"?"Install Vita app (VPK)":"Install Vita archive")
         :"Install Vita license");
     } else if(importFileType(item.label,ImportKind::FirmwarePup,&importType)){
       installable=true;actions.push_back(Install);labels.push_back("Use as Vita firmware");

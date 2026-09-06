@@ -209,6 +209,7 @@ elseif(SWITCH)
 		switch/switch_state.cpp
 		switch/switch_bootstrap.cpp
 		switch/switch_installer.cpp
+		switch/seven_zip.cpp
 		switch/switch_ime.cpp
 		switch/switch_pthread_tls.cpp
 		switch/filesystem_switch.cpp
@@ -217,7 +218,7 @@ elseif(SWITCH)
 		performance.cpp
 	)
 	target_include_directories(vita3k PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-	target_link_libraries(vita3k PRIVATE SDL3::SDL3 pugixml::pugixml crypto)
+	target_link_libraries(vita3k PRIVATE SDL3::SDL3 pugixml::pugixml crypto vita3k_7zip)
 	# libnx exposes only twelve process-wide pthread TLS keys. Vita3K's static
 	# dependencies (libgcc/libstdc++, SDL, OpenSSL and Mesa's Rust runtime) need
 	# more than that, and libstdc++'s __cxa_thread_atexit path does not handle an

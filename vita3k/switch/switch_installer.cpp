@@ -16,6 +16,7 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #include "switch_installer.h"
+#include "seven_zip.h"
 
 #include <archive.h>            // install_archive (.vpk / .zip / .vci)
 #include <config/state.h>
@@ -807,15 +808,49 @@ static bool copy_tree_with_progress(const fs::path &source, const fs::path &dest
     return true;
 }
 
-// A dump already in ux0/app is decrypted in place; anything else is copied in.
-static void install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &folder) {
+static bool move_extracted_folder(const fs::path &source, const fs::path &destination) {
+    fs::create_directories(destination.parent_path());
+    const fs::path backup = destination.parent_path() / fmt::format(".7z-backup-{:016x}", randomGet64());
+    if (fs::exists(backup))
+        return false;
+    const bool replacing = fs::exists(destination);
+    if (replacing)
+        fs::rename(destination, backup);
+    boost::system::error_code error;
+    fs::rename(source, destination, error);
+    if (error) {
+        LOG_ERROR("Cannot install extracted folder: {}", error.message());
+        if (replacing)
+            fs::rename(backup, destination);
+        return false;
+    }
+    if (replacing) {
+        fs::remove_all(backup, error);
+        if (error)
+            LOG_WARN("Could not remove installation backup '{}': {}", backup.string(), error.message());
+    }
+    fsdevCommitDevice("sdmc");
+    return true;
+}
+
+// Returns 1 on success, 0 when skipped, and -1 on failure.
+static int install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &folder, bool extracted = false) {
     ui.step("Folder: " + folder.filename().string());
     vfs::FileBuffer param;
     sfo::SfoAppInfo info;
     if (!fs_utils::read_data(folder / "sce_sys/param.sfo", param) || !sfo::get_param_info(info, param, emuenv.cfg.sys_lang)) {
         ui.note("FAILED: sce_sys/param.sfo is unreadable");
-        ui.done("Failed. Nothing was installed - see the log.");
-        return;
+        return -1;
+    }
+    const auto safe_component = [](const std::string &value) {
+        return !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        });
+    };
+    if (!safe_component(info.app_title_id) || (info.app_category == "ac"
+            && (info.app_content_id.size() <= 20 || !safe_component(info.app_content_id.substr(20))))) {
+        ui.note("FAILED: invalid installation path in sce_sys/param.sfo");
+        return -1;
     }
     const std::string label = info.app_title.empty() ? info.app_title_id : info.app_title;
     const std::string suffix = info.app_category.empty() ? "" : " [" + info.app_category + "]";
@@ -846,8 +881,7 @@ static void install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path 
             if (app_exists && !ui.confirm(label + " (" + info.app_title_id + ") is already installed.",
                     "Reinstall it", "Keep the installed copy")) {
                 ui.note("SKIPPED: kept the installed copy");
-                ui.done("Nothing to install.");
-                return;
+                return 0;
             }
             const fs::path work_bin = folder / "sce_sys/package/work.bin";
             if (is_app && fs::is_regular_file(work_bin, ec)) {
@@ -860,8 +894,8 @@ static void install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path 
             } else if (is_app && fs::exists(folder / "sce_pfs", ec)) {
                 ui.note("FAILED: encrypted dump without sce_sys/package/work.bin");
             } else if (is_app) {
-                ui.step("Copying: " + label);
-                ok = copy_tree_with_progress(folder, app_dir, ui);
+                ui.step("Installing: " + label);
+                ok = extracted ? move_extracted_folder(folder, app_dir) : copy_tree_with_progress(folder, app_dir, ui);
                 if (!ok)
                     ui.note("FAILED: could not copy the folder - see the log");
             } else {
@@ -881,7 +915,7 @@ static void install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path 
     }
     if (ok)
         ui.note("OK: " + label + suffix);
-    ui.done(ok ? "Done. 1 item installed." : "Failed. Nothing was installed - see the log.");
+    return ok ? 1 : -1;
 }
 
 // Extracts the named members into `dest`, flattened to their base names so a
@@ -979,7 +1013,8 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
     if (single)
         LOG_WARN("Installer target: single file '{}'", target.string());
     if (single_folder) {
-        install_folder(emuenv, ui, target);
+        const int installed = install_folder(emuenv, ui, target);
+        ui.done(installed > 0 ? "Done. 1 item installed." : installed == 0 ? "Nothing to install." : "Failed. Nothing was installed - see the log.");
         return;
     }
 
@@ -1028,7 +1063,7 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
             licenses.push_back(p);
         else if (ext == ".pkg")
             pkgs.push_back(p);
-        else if (ext == ".vpk" || ext == ".zip" || ext == ".vci")
+        else if (ext == ".vpk" || ext == ".zip" || ext == ".7z" || ext == ".vci")
             archives.push_back(p);
     };
     try {
@@ -1063,6 +1098,85 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
     bool pkg_failed = false; // if any package failed/was skipped, keep the work.bin(s) for a retry
     int items_ok = 0, items_failed = 0; // drives the closing summary
     int items_no_license = 0; // of those, the ones a work.bin/zRIF would fix
+
+    std::vector<std::unique_ptr<ExtractedSevenZip>> sevenzip_extractions;
+    std::vector<fs::path> sevenzip_sources, base_folders, extra_folders;
+    bool sevenzip_complete = true;
+    {
+        std::vector<fs::path> inputs;
+        inputs.swap(archives);
+        for (const auto &archive : inputs) {
+            if (lower(archive.extension().string()) != ".7z") {
+                archives.push_back(archive);
+                continue;
+            }
+            ui.step("Unpacking: " + archive.filename().string());
+            try {
+                std::string current_file;
+                auto extracted = extract_seven_zip(archive, staging_dir,
+                    [&](const std::string &name, uint64_t done, uint64_t total) {
+                        if (current_file != name) {
+                            current_file = name;
+                            ui.step("Unpacking: " + name);
+                        }
+                        ui.progress(total ? static_cast<int>(static_cast<double>(done) / total * 100) : 100);
+                    });
+                std::vector<fs::path> folders;
+                for (const auto &file : extracted->files)
+                    if (file.filename() == "param.sfo" && file.parent_path().filename() == "sce_sys")
+                        folders.push_back(file.parent_path().parent_path());
+                const auto inside = [](const fs::path &file, const fs::path &folder) {
+                    const fs::path relative = file.lexically_relative(folder);
+                    return !relative.empty() && *relative.begin() != "..";
+                };
+                std::sort(folders.begin(), folders.end());
+                std::vector<fs::path> roots;
+                for (const auto &folder : folders) {
+                    if (std::any_of(roots.begin(), roots.end(), [&](const fs::path &root) { return inside(folder, root); }))
+                        continue;
+                    roots.push_back(folder);
+                    vfs::FileBuffer param;
+                    sfo::SfoAppInfo info;
+                    const bool extra = fs_utils::read_data(folder / "sce_sys/param.sfo", param)
+                        && sfo::get_param_info(info, param, emuenv.cfg.sys_lang)
+                        && (info.app_category.contains("gp") || info.app_category == "ac");
+                    (extra ? extra_folders : base_folders).push_back(folder);
+                }
+                size_t installables = roots.size();
+                bool has_package = false;
+                for (const auto &file : extracted->files) {
+                    if (std::any_of(roots.begin(), roots.end(), [&](const fs::path &root) { return inside(file, root); }))
+                        continue;
+                    const std::string extension = lower(file.extension().string());
+                    if (extension == ".7z")
+                        continue;
+                    if (is_installable_member(file.string()) || extension == ".zip") {
+                        categorise(file);
+                        has_package |= extension == ".pkg";
+                        ++installables;
+                    }
+                }
+                if (has_package) {
+                    boost::system::error_code error;
+                    for (fs::directory_iterator it(archive.parent_path(), error), end; !error && it != end; it.increment(error)) {
+                        const std::string name = lower(it->path().filename().string());
+                        if (it->is_regular_file(error) && (name == "work.bin" || lower(it->path().extension().string()) == ".rif"))
+                            licenses.push_back(it->path());
+                    }
+                }
+                if (!installables)
+                    throw std::runtime_error("The 7z archive contains no Vita game folders, packages or licenses");
+                sevenzip_sources.push_back(archive);
+                sevenzip_extractions.push_back(std::move(extracted));
+            } catch (const std::exception &error) {
+                LOG_ERROR("7z installation '{}': {}", archive.string(), error.what());
+                ui.note(std::string("FAILED: ") + error.what());
+                ++items_failed;
+                pkg_failed = true;
+                sevenzip_complete = false;
+            }
+        }
+    }
 
     std::map<std::string, std::string> archive_hint; // why an archive had nothing to install
     if (!archives.empty()) {
@@ -1132,11 +1246,12 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
     std::stable_partition(pkgs.begin(), pkgs.end(), [](const fs::path &p) { return !pkg_is_patch(p, nullptr); });
     std::stable_partition(archives.begin(), archives.end(), [](const fs::path &p) { return !archive_only_patches(p); });
 
-    if (pups.empty() && licenses.empty() && pkgs.empty() && archives.empty()) {
+    if (pups.empty() && licenses.empty() && pkgs.empty() && archives.empty()
+        && base_folders.empty() && extra_folders.empty() && items_failed == 0) {
         ui.step("Nothing to install");
         ui.note("Nothing to install. Put files in " + install_dir.string()
             + " :\n  firmware  -> PSP2UPDAT.PUP\n  game      -> <name>.pkg  (+ its work.bin next to it)"
-            + "\n  homebrew  -> <name>.vpk / .zip / .vci");
+            + "\n  homebrew  -> <name>.vpk / .zip / .7z / .vci");
     }
 
     // Sources that installed successfully, offered for deletion at the end to free
@@ -1211,6 +1326,29 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
     std::streambuf *const cout_old = std::cout.rdbuf();
     TeeLogBuf cout_tee(cout_old);
     std::cout.rdbuf(&cout_tee);
+    const auto install_extracted_folders = [&](const std::vector<fs::path> &folders) {
+        for (const auto &folder : folders) {
+            try {
+                const int installed = install_folder(emuenv, ui, folder, true);
+                if (installed > 0)
+                    ++items_ok;
+                else {
+                    sevenzip_complete = false;
+                    if (installed < 0) {
+                        ++items_failed;
+                        pkg_failed = true;
+                    }
+                }
+            } catch (const std::exception &error) {
+                ui.note(std::string("FAILED: ") + error.what());
+                ++items_failed;
+                pkg_failed = true;
+                sevenzip_complete = false;
+            }
+        }
+    };
+    install_extracted_folders(base_folders);
+
     for (const auto &pkg : pkgs) {
         ui.step("Package: " + pkg.filename().string() + " (decrypting, please wait)");
         try {
@@ -1355,6 +1493,19 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
             items_failed++;
             pkg_failed = true;
         }
+    }
+
+    install_extracted_folders(extra_folders);
+    if (sevenzip_complete && items_failed == 0) {
+        for (const auto &source : sevenzip_sources) {
+            const fs::path done = mark_done(source);
+            if (is_staged(done))
+                to_delete.push_back(done);
+        }
+    }
+    if (!sevenzip_extractions.empty()) {
+        ui.step("Cleaning up extracted files");
+        sevenzip_extractions.clear();
     }
 
     // Once every package succeeded, the license/work.bin sources are redundant (the
