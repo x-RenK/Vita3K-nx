@@ -41,6 +41,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <stdexcept>
 #include <streambuf>
 #include <string>
 #include <vector>
@@ -747,21 +748,44 @@ static bool archive_only_patches(const fs::path &archive_path) {
     return contents > 0 && contents == patches;
 }
 
-// Copies a game folder into ux0/app through a staging directory, reporting progress per chunk.
-static bool copy_tree_with_progress(const fs::path &source, const fs::path &destination, InstallerUI &ui) {
+static bool replace_folder(const fs::path &source, const fs::path &destination);
+static bool folder_paths_overlap(const fs::path &source, const fs::path &destination);
+
+static bool copy_tree_with_progress(const fs::path &source, const fs::path &destination, InstallerUI &ui, bool merge = false) {
     boost::system::error_code ec;
-    const fs::path staged = destination.parent_path() / ("." + destination.filename().string() + ".copying");
-    fs::remove_all(staged, ec);
+    const fs::path staged = merge ? destination : destination.parent_path() / ("." + destination.filename().string() + ".copying");
+    if (folder_paths_overlap(source, staged)) {
+        LOG_ERROR("Installer: source overlaps the copy destination '{}': '{}'", staged.string(), source.string());
+        return false;
+    }
+    if (!merge) {
+        fs::remove_all(staged, ec);
+        if (ec)
+            return false;
+    }
+    fs::create_directories(staged, ec);
+    if (ec)
+        return false;
 
     uint64_t total = 0;
-    for (fs::recursive_directory_iterator it(source, ec), end; !ec && it != end; it.increment(ec))
-        if (fs::is_regular_file(it->path(), ec))
-            total += fs::file_size(it->path(), ec);
+    for (fs::recursive_directory_iterator it(source, ec), end; !ec && it != end; it.increment(ec)) {
+        ui.progress(0);
+        if (fs::is_regular_file(it->path(), ec)) {
+            const auto size = fs::file_size(it->path(), ec);
+            if (ec)
+                break;
+            total += size;
+        }
+    }
+    if (ec) {
+        LOG_ERROR("Installer: cannot read source folder: {}", ec.message());
+        return false;
+    }
 
     uint64_t done = 0;
     std::vector<char> chunk(4u * 1024 * 1024);
     for (fs::recursive_directory_iterator it(source, ec), end; !ec && it != end; it.increment(ec)) {
-        const fs::path relative = fs::relative(it->path(), source, ec);
+        const fs::path relative = it->path().lexically_relative(source);
         const fs::path target = staged / relative;
         if (fs::is_directory(it->path(), ec)) {
             fs::create_directories(target, ec);
@@ -770,11 +794,12 @@ static bool copy_tree_with_progress(const fs::path &source, const fs::path &dest
             continue;
         }
         fs::create_directories(target.parent_path(), ec);
+        if (ec)
+            break;
         fs::ifstream in(it->path(), std::ios::binary);
         fs::ofstream out(target, std::ios::binary | std::ios::trunc);
         if (!in || !out) {
             LOG_ERROR("Installer: cannot copy '{}'", it->path().string());
-            fs::remove_all(staged, ec);
             return false;
         }
         while (in) {
@@ -783,34 +808,31 @@ static bool copy_tree_with_progress(const fs::path &source, const fs::path &dest
             if (got <= 0)
                 break;
             out.write(chunk.data(), got);
+            if (!out)
+                break;
             done += static_cast<uint64_t>(got);
             ui.progress(total ? static_cast<int>(done * 100 / total) : 100);
         }
         out.close();
-        if (!out) {
-            LOG_ERROR("Installer: write failed for '{}'", target.string());
-            fs::remove_all(staged, ec);
+        if (in.bad() || !out) {
+            LOG_ERROR("Installer: copy failed for '{}'", target.string());
             return false;
         }
     }
     if (ec) {
         LOG_ERROR("Installer: folder copy failed: {}", ec.message());
-        fs::remove_all(staged, ec);
         return false;
     }
-    fs::remove_all(destination, ec);
-    fs::rename(staged, destination, ec);
-    if (ec) {
-        LOG_ERROR("Installer: cannot move '{}' into place: {}", staged.string(), ec.message());
+    if (!merge && !replace_folder(staged, destination))
         return false;
-    }
+    ui.progress(100);
     fsdevCommitDevice("sdmc");
     return true;
 }
 
-static bool move_extracted_folder(const fs::path &source, const fs::path &destination) {
+static bool replace_folder(const fs::path &source, const fs::path &destination) {
     fs::create_directories(destination.parent_path());
-    const fs::path backup = destination.parent_path() / fmt::format(".7z-backup-{:016x}", randomGet64());
+    const fs::path backup = destination.parent_path() / fmt::format(".install-backup-{:016x}", randomGet64());
     if (fs::exists(backup))
         return false;
     const bool replacing = fs::exists(destination);
@@ -830,6 +852,25 @@ static bool move_extracted_folder(const fs::path &source, const fs::path &destin
             LOG_WARN("Could not remove installation backup '{}': {}", backup.string(), error.message());
     }
     fsdevCommitDevice("sdmc");
+    return true;
+}
+
+static fs::path normalize_folder_path(const fs::path &path) {
+    // Preserve Horizon device prefixes, which Boost treats as relative paths.
+    auto result = fs::path(lower(path.generic_string())).lexically_normal();
+    if (result.filename().empty() || result.filename() == ".")
+        result = result.parent_path();
+    return result;
+}
+
+static bool folder_paths_overlap(const fs::path &source, const fs::path &destination) {
+    const auto src = normalize_folder_path(source);
+    const auto dst = normalize_folder_path(destination);
+    auto s = src.begin();
+    auto d = dst.begin();
+    for (; s != src.end() && d != dst.end(); ++s, ++d)
+        if (*s != *d)
+            return false;
     return true;
 }
 
@@ -858,11 +899,19 @@ static int install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &
     const fs::path app_dir = emuenv.vita_fs_path / "ux0/app" / info.app_title_id;
     boost::system::error_code ec;
     const bool app_exists = is_app && fs::exists(app_dir, ec) && !ec;
-    const bool in_place = app_exists && fs::equivalent(folder, app_dir, ec) && !ec;
-    LOG_WARN("Installer folder target: '{}' ({} {}) in_place={}", folder.string(), info.app_title_id, info.app_category, in_place);
+    // Horizon stat does not provide unique inode numbers for equivalent().
+    const bool in_place = app_exists && normalize_folder_path(folder) == normalize_folder_path(app_dir);
 
     bool ok = false;
     try {
+        const fs::path destination = is_app ? app_dir
+            : info.app_category == "ac" ? emuenv.vita_fs_path / "ux0/addcont" / info.app_title_id / info.app_content_id.substr(20)
+                                        : emuenv.vita_fs_path / "ux0/patch" / info.app_title_id;
+        if (!in_place && (folder_paths_overlap(folder, destination)
+                || (info.app_category.contains("gp") && folder_paths_overlap(folder, app_dir)))) {
+            ui.note("FAILED: source folder overlaps the installation destination");
+            return -1;
+        }
         if (in_place) {
             const fs::path work_bin = folder / "sce_sys/package/work.bin";
             if (fs::is_regular_file(work_bin, ec)) {
@@ -895,11 +944,36 @@ static int install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &
                 ui.note("FAILED: encrypted dump without sce_sys/package/work.bin");
             } else if (is_app) {
                 ui.step("Installing: " + label);
-                ok = extracted ? move_extracted_folder(folder, app_dir) : copy_tree_with_progress(folder, app_dir, ui);
+                ok = extracted ? replace_folder(folder, app_dir) : copy_tree_with_progress(folder, app_dir, ui);
                 if (!ok)
                     ui.note("FAILED: could not copy the folder - see the log");
             } else {
-                ok = install_contents(emuenv, folder) > 0;
+                emuenv.app_info = info;
+                const bool is_patch = info.app_category.contains("gp");
+                if (is_patch && !fs::is_regular_file(app_dir / "sce_sys/param.sfo")) {
+                    ui.note("FAILED: install the base game before its update");
+                    return -1;
+                }
+                const fs::path app_license = emuenv.vita_fs_path / "ux0/license" / info.app_title_id / (info.app_content_id + ".rif");
+                const fs::path license = is_patch && fs::is_regular_file(app_license) ? app_license : work_bin;
+                const bool encrypted = fs::exists(folder / "sce_pfs") || fs::is_regular_file(work_bin);
+                if (encrypted && fs::is_regular_file(license)) {
+                    ui.step("Decrypting: " + label + suffix);
+                    ok = decrypt_install_nonpdrm_from(emuenv, license, folder, destination,
+                        [&](float pct) { ui.progress(static_cast<int>(pct * 100.f)); });
+                } else if (encrypted) {
+                    ui.note("FAILED: no license available to decrypt this content");
+                    return -1;
+                } else {
+                    ui.step("Copying: " + label + suffix);
+                    ok = copy_tree_with_progress(folder, destination, ui);
+                }
+                if (ok && is_patch) {
+                    ui.step("Applying update: " + label);
+                    ok = copy_tree_with_progress(destination, app_dir, ui, true);
+                    if (ok)
+                        fs::remove_all(destination);
+                }
                 if (!ok)
                     ui.note("FAILED (see the log)");
             }
@@ -916,6 +990,73 @@ static int install_folder(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &
     if (ok)
         ui.note("OK: " + label + suffix);
     return ok ? 1 : -1;
+}
+
+static void install_folder_bundle(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &root) {
+    struct Content {
+        fs::path path;
+        std::string title_id;
+        int order;
+    };
+    std::vector<Content> contents;
+    ui.step("Scanning folders");
+    try {
+        const auto scan = [&](auto &&self, const fs::path &folder, unsigned depth) -> void {
+            if (fs::is_symlink(folder))
+                return;
+            if (fs::is_regular_file(folder / "sce_sys/param.sfo")) {
+                vfs::FileBuffer param;
+                sfo::SfoAppInfo info;
+                if (!fs_utils::read_data(folder / "sce_sys/param.sfo", param)
+                    || !sfo::get_param_info(info, param, emuenv.cfg.sys_lang))
+                    throw std::runtime_error("Cannot read " + (folder / "sce_sys/param.sfo").string());
+                const int order = info.app_category == "ac" ? 2 : info.app_category.contains("gp") ? 1 : 0;
+                contents.push_back({ folder, info.app_title_id, order });
+                return;
+            }
+            if (depth == 3)
+                return;
+            for (const auto &entry : fs::directory_iterator(folder))
+                if (!fs::is_symlink(entry.path()) && fs::is_directory(entry.path()))
+                    self(self, entry.path(), depth + 1);
+        };
+        scan(scan, root, 0);
+    } catch (const std::exception &e) {
+        LOG_ERROR("Installer: cannot scan folder '{}': {}", root.string(), e.what());
+        ui.note(e.what());
+        ui.done("Folder scan failed. Nothing was installed.");
+        return;
+    }
+    if (contents.empty()) {
+        ui.done("No Vita content found in the selected folder.");
+        return;
+    }
+    std::sort(contents.begin(), contents.end(), [](const Content &a, const Content &b) {
+        return a.order != b.order ? a.order < b.order : a.path < b.path;
+    });
+    int installed = 0, skipped = 0, failed = 0;
+    std::vector<std::string> failed_apps;
+    for (const auto &content : contents) {
+        if (!appletMainLoop())
+            return;
+        if (content.order != 0 && std::ranges::find(failed_apps, content.title_id) != failed_apps.end()) {
+            ui.note("SKIPPED: base game installation failed for " + content.title_id);
+            ++skipped;
+            continue;
+        }
+        const int result = install_folder(emuenv, ui, content.path);
+        if (result > 0)
+            ++installed;
+        else if (result == 0)
+            ++skipped;
+        else {
+            ++failed;
+            if (content.order == 0)
+                failed_apps.push_back(content.title_id);
+        }
+    }
+    fsdevCommitDevice("sdmc");
+    ui.done(fmt::format("Done. {} installed, {} skipped, {} failed.", installed, skipped, failed));
 }
 
 // Extracts the named members into `dest`, flattened to their base names so a
@@ -996,8 +1137,7 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
     // everything dropped in sdmc:/switch/vita3k/install.
     boost::system::error_code single_ec;
     const bool single = !target.empty() && fs::is_regular_file(target, single_ec) && !single_ec;
-    const bool single_folder = !target.empty() && fs::is_directory(target, single_ec) && !single_ec
-        && fs::is_regular_file(target / "sce_sys/param.sfo", single_ec) && !single_ec;
+    const bool single_folder = !target.empty() && fs::is_directory(target, single_ec) && !single_ec;
     // Where the launcher stages imports. A single target can now live outside it:
     // the launcher installs an SD-resident archive in place rather than copying it.
     const fs::path staging_dir = fs::path("sdmc:/switch/vita3k/install");
@@ -1013,8 +1153,11 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
     if (single)
         LOG_WARN("Installer target: single file '{}'", target.string());
     if (single_folder) {
-        const int installed = install_folder(emuenv, ui, target);
-        ui.done(installed > 0 ? "Done. 1 item installed." : installed == 0 ? "Nothing to install." : "Failed. Nothing was installed - see the log.");
+        install_folder_bundle(emuenv, ui, target);
+        return;
+    }
+    if (!target.empty() && !single) {
+        ui.done("The selected file or folder is unavailable.");
         return;
     }
 

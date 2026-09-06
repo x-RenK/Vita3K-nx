@@ -4591,11 +4591,15 @@ static bool installBrowserFile(const BrowserItem &item){
   return false;
 }
 
-// A game folder (sce_sys/param.sfo inside) picked in the browser: hand its path to the
-// emulator installer, which decrypts a dump already in ux0/app in place or copies it in.
-static bool browserFolderIsVitaApp(const std::string &path){
+static bool browserFolderIsVitaContent(const std::string &path){
   struct stat info{};
-  return stat((path+"/sce_sys/param.sfo").c_str(),&info)==0&&S_ISREG(info.st_mode);
+  if(stat((path+"/sce_sys/param.sfo").c_str(),&info)==0&&S_ISREG(info.st_mode))return true;
+  const std::string name=fileNameOf(path);
+  for(const char *container:{"app","patch","addcont","reAddcont"}){
+    if(name==container)return true;
+    if(stat((path+"/"+container).c_str(),&info)==0&&S_ISDIR(info.st_mode))return true;
+  }
+  return false;
 }
 static bool installBrowserFolder(const BrowserItem &item){
   if(item.kind!=BrowserItemKind::Directory)return false;
@@ -4623,8 +4627,8 @@ static bool browserActions(const BrowserItem &item){
     } else if(importFileType(item.label,ImportKind::FirmwarePup,&importType)){
       installable=true;actions.push_back(Install);labels.push_back("Use as Vita firmware");
     }
-  } else if(item.kind==BrowserItemKind::Directory&&browserFolderIsVitaApp(item.path)){
-    installable=true;actions.push_back(Install);labels.push_back("Install Vita app (folder)");
+  } else if(item.kind==BrowserItemKind::Directory&&browserFolderIsVitaContent(item.path)){
+    installable=true;actions.push_back(Install);labels.push_back("Install Vita content (folder)");
   }
   actions.push_back(Copy);labels.push_back("Copy");
   actions.push_back(Move);labels.push_back("Move");

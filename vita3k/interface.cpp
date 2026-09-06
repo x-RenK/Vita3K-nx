@@ -124,8 +124,10 @@ static bool set_content_path(EmuEnvState &emuenv, const bool is_theme, fs::path 
             emuenv.app_info.app_title += " (DLC)";
         }
     } else if (emuenv.app_info.app_category.contains("gp")) {
-        if (!fs::exists(app_path) || fs::is_empty(app_path)) {
-            LOG_ERROR("Install app before patch");
+        boost::system::error_code ec;
+        const fs::directory_iterator entry(app_path, ec);
+        if (ec || entry == fs::directory_iterator{}) {
+            LOG_ERROR("Install app before patch: '{}' is empty or unreadable ({})", app_path, ec.message());
             return false;
         }
         dest_path /= fs::path("patch") / emuenv.app_info.app_title_id;

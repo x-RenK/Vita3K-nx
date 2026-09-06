@@ -382,6 +382,7 @@ constexpr Entry ENTRIES[] = {
     {"Continue", "Continuer", "Weiter", "Continuar", "Continua", "Continuar", "继续", "繼續"},
     {"Up / Back", "Dossier parent / Retour", "Übergeordnet / Zurück", "Subir / Volver", "Su / Indietro", "Subir / Voltar", "上一级 / 返回", "上一層 / 返回"},
     {"Install Vita archive", "Installer une archive Vita", "Vita-Archiv installieren", "Instalar archivo Vita", "Installa archivio Vita", "Instalar arquivo Vita", "安装 Vita 压缩包", "安裝 Vita 壓縮檔"},
+    {"Install Vita content (folder)", "Installer du contenu Vita (dossier)", "Vita-Inhalte installieren (Ordner)", "Instalar contenido Vita (carpeta)", "Installa contenuti Vita (cartella)", "Instalar conteúdo Vita (pasta)", "安装 Vita 内容（文件夹）", "安裝 Vita 內容（資料夾）"},
     {"Install Vita app (VPK)", "Installer une application Vita (VPK)", "Vita-App installieren (VPK)", "Instalar aplicación Vita (VPK)", "Installa applicazione Vita (VPK)", "Instalar aplicação Vita (VPK)", "安装 Vita 应用（VPK）", "安裝 Vita 應用程式（VPK）"},
     {"The selected file is not a readable Vita archive.", "Le fichier sélectionné n'est pas une archive Vita lisible.", "Die gewählte Datei ist kein lesbares Vita-Archiv.", "El archivo seleccionado no es un archivo Vita válido.", "Il file selezionato non è un archivio Vita leggibile.", "O ficheiro selecionado não é um arquivo Vita legível.", "所选文件不是可读取的 Vita 压缩包。", "所選檔案不是可讀取的 Vita 壓縮檔。"},
     {"Selected", "Sélectionné", "Ausgewählt", "Seleccionado", "Selezionato", "Selecionado", "已选择", "已選擇"},
