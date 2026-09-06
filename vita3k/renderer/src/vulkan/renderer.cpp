@@ -412,23 +412,19 @@ void VKState::submit_general(const vk::SubmitInfo &submit_info, vk::Fence fence,
     }
 }
 
-void VKState::submit_general_pair(const vk::SubmitInfo &first_submit_info,
-    const vk::SubmitInfo &second_submit_info, vk::Fence second_fence) {
-    // Keep dependent submissions adjacent on the queue. In particular, the
-    // Switch NVK path needs the pre-render upload work submitted separately
-    // from, but immediately before, the render work that consumes it.
+void VKState::submit_general_sequence(const std::vector<vk::CommandBuffer> &commands, vk::Fence fence) {
+    assert(!commands.empty());
+    // Keep uploads and rendering separate, with no worker submissions between them.
     const std::lock_guard<std::mutex> lock(general_queue_mutex);
-    try {
-        general_queue.submit(first_submit_info);
-    } catch (const vk::SystemError &error) {
-        LOG_CRITICAL("Vulkan scene pre-render submission failed: {}", error.what());
-        throw;
-    }
-    try {
-        general_queue.submit(second_submit_info, second_fence);
-    } catch (const vk::SystemError &error) {
-        LOG_CRITICAL("Vulkan scene render submission failed: {}", error.what());
-        throw;
+    for (size_t i = 0; i < commands.size(); ++i) {
+        vk::SubmitInfo submit_info{};
+        submit_info.setCommandBuffers(commands[i]);
+        try {
+            general_queue.submit(submit_info, i + 1 == commands.size() ? fence : vk::Fence{});
+        } catch (const vk::SystemError &error) {
+            LOG_CRITICAL("Vulkan scene submission {}/{} failed: {}", i + 1, commands.size(), error.what());
+            throw;
+        }
     }
 }
 

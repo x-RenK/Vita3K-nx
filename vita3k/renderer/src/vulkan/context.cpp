@@ -644,20 +644,11 @@ void VKContext::stop_recording(const SceGxmNotification &notif1, const SceGxmNot
     vk::Fence fence = next_fence;
     next_fence = nullptr;
 
+#ifdef __SWITCH__
+    state.submit_general_sequence(cmdbuffers_to_submit, fence);
+#else
     vk::SubmitInfo submit_info{};
     submit_info.setCommandBuffers(cmdbuffers_to_submit);
-
-#ifdef __SWITCH__
-    // Mesa/NVK on Horizon behaves reliably when upload/pre-render work and the
-    // render work consuming it are separate queue submissions. Hold the queue
-    // lock across both so worker submissions cannot be inserted between them.
-    assert(cmdbuffers_to_submit.size() == 2);
-    vk::SubmitInfo prerender_submit_info{};
-    prerender_submit_info.setCommandBuffers(cmdbuffers_to_submit[0]);
-    vk::SubmitInfo render_submit_info{};
-    render_submit_info.setCommandBuffers(cmdbuffers_to_submit[1]);
-    state.submit_general_pair(prerender_submit_info, render_submit_info, fence);
-#else
     state.submit_general(submit_info, fence);
 #endif
     cmdbuffers_to_submit.clear();

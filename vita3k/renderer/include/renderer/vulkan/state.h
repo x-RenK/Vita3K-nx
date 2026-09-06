@@ -161,8 +161,7 @@ struct VKState : public renderer::State {
 
     void submit_general(const vk::SubmitInfo &submit_info, vk::Fence fence = {},
         const char *stage = "general queue submission");
-    void submit_general_pair(const vk::SubmitInfo &first_submit_info,
-        const vk::SubmitInfo &second_submit_info, vk::Fence second_fence = {});
+    void submit_general_sequence(const std::vector<vk::CommandBuffer> &commands, vk::Fence fence = {});
     vk::Result present_general(const vk::PresentInfoKHR &present_info);
     vk::Result submit_and_present_general(const vk::SubmitInfo &submit_info,
         vk::Fence fence, const vk::PresentInfoKHR &present_info);
