@@ -201,6 +201,7 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(int, "performance-overlay-position", static_cast<int>(TOP_LEFT), performance_overlay_position) \
     code(int, "screenshot-format", static_cast<int>(JPEG), screenshot_format)                           \
     code(bool, "disable-motion", false, disable_motion)                                                 \
+    code(std::string, "switch-gyro-source", "right", switch_gyro_source)                                 \
     code(float, "controller-analog-multiplier", 1.0f, controller_analog_multiplier)                     \
     code(int, "switch-stick-deadzone", 15, switch_stick_deadzone)                                      \
     code(bool, "switch-swap-shoulders", false, switch_swap_shoulders)                                 \

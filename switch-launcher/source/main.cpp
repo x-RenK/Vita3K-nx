@@ -312,6 +312,7 @@ struct Opt {
 // Vita3K settings. Values are the literal strings written into config.yml
 // (see vita3k/config/include/config/config.h). Bools are yaml "true"/"false".
 static const Choice C_bool[]     = { {"Off","false"}, {"On","true"} };
+static const Choice C_gyroSource[] = { {"Right Joy-Con","right"}, {"Left Joy-Con","left"} };
 static const Choice C_boolint[]  = { {"Off","0"}, {"On","1"} };   // int-typed on/off (e.g. psn-signed-in)
 static const Choice C_backend[]  = { {"Vulkan (NVK)","Vulkan"}, {"OpenGL (NVC0)","OpenGL"},
                                      {"Zink (OpenGL on NVK)","Zink"} };
@@ -443,6 +444,7 @@ static const Opt S_network[] = {
 // settings; SDL controller bind arrays remain unused on Horizon.
 static const Opt S_controller[] = {
   O_CHOICE("Disable motion",      "disable-motion",               C_bool,      "false"),
+  O_CHOICEG("Gyro source",        "switch-gyro-source",           C_gyroSource, "right", "disable-motion", "true"),
   O_CHOICE("Stick sensitivity",   "controller-analog-multiplier", C_analog,    "1.0"),
   O_RANGE ("Stick deadzone (%)",  "switch-stick-deadzone",        0, 40, 2,    "15"),
   O_CHOICE("Swap L/R with ZL/ZR", "switch-swap-shoulders",         C_bool,      "false"),
@@ -2360,6 +2362,7 @@ static const SettingHelpEntry SETTING_HELP[] = {
   {"psn-signed-in","Network","Reports a signed-in PSN state to games. It does not sign the console into PlayStation Network."},
   {"adhoc-addr","Network","Selects the local address index used by Vita ad-hoc networking."},
   {"disable-motion","Controls","Disables Vita motion-sensor input derived from the active Switch controller."},
+  {"switch-gyro-source","Controls","Chooses which detached Joy-Con supplies motion. Falls back to the other connected Joy-Con."},
   {"controller-analog-multiplier","Controls","Scales analog stick movement before it is sent to the emulated Vita."},
   {"switch-stick-deadzone","Controls","Ignores small stick movements to reduce drift. Too high a value reduces fine control."},
   {"switch-swap-shoulders","Controls","Swaps the Switch shoulder buttons with the triggers, so ZL and ZR act as the Vita L and R. The rear touch options below follow the swap and name whichever pair is left."},

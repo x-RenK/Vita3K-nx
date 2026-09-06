@@ -691,12 +691,18 @@ struct SwitchSixAxis {
         else if (style & HidNpadStyleTag_NpadFullKey)
             handle_index = 1;
         else if (style & HidNpadStyleTag_NpadJoyDual) {
-            if (attributes & HidNpadAttribute_IsLeftConnected)
-                handle_index = 2;
-            else if (attributes & HidNpadAttribute_IsRightConnected) {
-                handle_index = 3;
-                right_joycon = true;
-            }
+            const bool prefer_right = emuenv.cfg.switch_gyro_source != "left";
+            const int preferred = prefer_right ? 3 : 2;
+            const int fallback = prefer_right ? 2 : 3;
+            const auto available = [&](int index) {
+                const u32 connected = index == 3 ? HidNpadAttribute_IsRightConnected : HidNpadAttribute_IsLeftConnected;
+                return (attributes & connected) && active[index];
+            };
+            if (available(preferred))
+                handle_index = preferred;
+            else if (available(fallback))
+                handle_index = fallback;
+            right_joycon = handle_index == 3;
         } else if (style & HidNpadStyleTag_NpadJoyLeft) {
             handle_index = 4;
         } else if (style & HidNpadStyleTag_NpadJoyRight) {
@@ -734,6 +740,9 @@ struct SwitchSixAxis {
             event.data[0] = source.x * scale;
             event.data[1] = (handheld ? -source.z : -source.y) * scale;
             event.data[2] = (handheld ? source.y : -source.z) * scale;
+            // Correct handheld yaw without changing pitch or accelerometer tilt.
+            if (handheld && type == SDL_SENSOR_GYRO)
+                event.data[2] = -event.data[2];
             if (right_joycon) {
                 event.data[0] = -event.data[0];
                 event.data[1] = -event.data[1];
