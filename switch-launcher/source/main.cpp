@@ -1097,6 +1097,7 @@ static void clearUiBackground() {
 }
 
 static void roundedRect(int x,int y,int width,int height,int radius,SDL_Color color){
+  if(width<=0||height<=0)return;
   const int r=std::min({radius,width/2,height/2});
   if(!g_roundTexture){
     SDL_Surface *surface=SDL_CreateRGBSurfaceWithFormat(0,32,32,32,SDL_PIXELFORMAT_RGBA32);
@@ -1123,9 +1124,20 @@ static void roundedRect(int x,int y,int width,int height,int radius,SDL_Color co
     SDL_RenderCopyF(g_ren,g_roundTexture,&source,&destination);
   }
 }
+static void roundedPanel(int x,int y,int width,int height,SDL_Color face,SDL_Color edge,int radius=8,int thickness=1){
+  roundedRect(x,y,width,height,radius,edge);
+  roundedRect(x+thickness,y+thickness,width-2*thickness,height-2*thickness,std::max(0,radius-thickness),face);
+}
 static void glassPanel(int x,int y,int width,int height) {
-  roundedRect(x,y,width,height,8,(SDL_Color){255,255,255,24});
-  roundedRect(x+1,y+1,width-2,height-2,7,COL_PANEL);
+  roundedPanel(x,y,width,height,COL_PANEL,(SDL_Color){255,255,255,24});
+}
+static void drawButtonPanel(int x,int y,int width,int height,bool selected){
+  roundedPanel(x,y,width,height,selected?COL_FOCUS:COL_CARD,selected?COL_SEL:SDL_Color{255,255,255,28},6);
+}
+static void drawProgressBar(int x,int y,int width,int height,double fraction){
+  roundedRect(x,y,width,height,height/2,COL_CARD);
+  const int filled=(int)(width*std::clamp(fraction,0.0,1.0));
+  if(filled>0)roundedRect(x,y,filled,height,height/2,COL_SEL);
 }
 
 static void drawRowHighlight(int x,int y,int width,int height){
@@ -2431,9 +2443,12 @@ static void optAdjust(const Opt &o, int dir) {
   else if (o.type==OT_RANGE){ int v=atoi(iniGet(o.key,o.def))+dir*o.step; if(v<o.lo)v=o.lo; if(v>o.hi)v=o.hi; char b[24]; snprintf(b,sizeof(b),"%d",v); iniSet(o.key,b); }
 }
 
+static bool canResetOption(const Opt &option){
+  return option.key&&option.def&&
+    (option.type==OT_CHOICE||option.type==OT_RANGE||option.type==OT_TEXT||option.type==OT_MULTI);
+}
 static bool resetOption(const Opt &option) {
-  if(!option.key || !option.def ||
-     (option.type!=OT_CHOICE&&option.type!=OT_RANGE&&option.type!=OT_TEXT&&option.type!=OT_MULTI)) return false;
+  if(!canResetOption(option))return false;
   if(g_active==&g_game) storeRemove(g_game,option.key);
   else storeSet(*g_active,option.key,option.def);
   return true;
@@ -2555,7 +2570,6 @@ static void showHelpCard(const char *section,const char *title,const char *kind,
     const int panelHeight=std::min(SH-96,500);
     const int panelX=(SW-panelWidth)/2,panelY=(SH-panelHeight)/2;
     glassPanel(panelX,panelY,panelWidth,panelHeight);
-    border(panelX,panelY,panelWidth,panelHeight,3,COL_SEL);
     const std::string_view shownSection=LauncherLocalization::Translate(section&&*section?section:"Settings");
     const std::string_view shownTitle=LauncherLocalization::Translate(title&&*title?title:"Setting help");
     drawText(g_font_sm,panelX+40,panelY+24,shownSection.data(),COL_DIM);
@@ -2577,8 +2591,8 @@ static void showHelpCard(const char *section,const char *title,const char *kind,
     // translation for this exact sentence, retain the useful English text.
     const std::string_view shownDescription=LauncherLocalization::Translate(description);
     drawWrapped(g_font,panelX+40,bodyY,panelWidth-80,32,7,shownDescription.data(),COL_TXT);
-    FootItem closeHints[]={{g_gA,"Close",FA_NONE},{g_gB,"",FA_NONE},{g_gX,"",FA_NONE}};
-    drawFooterHints(closeHints,3,panelY+panelHeight-50);
+    FootItem closeHints[]={{g_gA,"Close",FA_NONE}};
+    drawFooterHints(closeHints,1,panelY+panelHeight-50);
     drawTextC(g_font_sm,SW/2,panelY+panelHeight-24,LauncherLocalization::Translate("Touch anywhere to close").data(),COL_DIM);
     presentUi();waitForNextFrame();
   }
@@ -2723,8 +2737,10 @@ static void renderSettings(int scr,int sel,int top,const char *ctx){
     int thH=trH*vis/S.n, denom=(S.n-vis>0?S.n-vis:1);
     fillRect(trX,trY+(trH-thH)*top/denom,4,thH,COL_SEL);
   }
-  FootItem helpFooter[]={{g_gX,"Help",FA_NONE},{g_gY,"Reset",FA_NONE},{g_gB,"Back",FA_NONE}};
-  drawFooterHints(helpFooter,3,SH-26);
+  FootItem helpFooter[3]={{g_gX,"Help",FA_NONE}};int hintCount=1;
+  if(canResetOption(S.opts[sel]))helpFooter[hintCount++]={g_gY,"Reset",FA_NONE};
+  helpFooter[hintCount++]={g_gB,"Back",FA_NONE};
+  drawFooterHints(helpFooter,hintCount,SH-26);
   drawFadeIn();
   presentUi();
 }
@@ -2883,7 +2899,6 @@ static void moduleListPicker(const Opt &option){
     clearUiBackground();
     const int pw=SW>760?760:SW-160,ph=90+vis*rowH,px=(SW-pw)/2,py=(SH-ph)/2;
     glassPanel(px,py,pw,ph);
-    border(px,py,pw,ph,3,COL_SEL);
     int active=0; for(char c:enabled) active+=c?1:0;
     char header[96];
     snprintf(header,sizeof(header),"%s  (%d)",
@@ -2894,8 +2909,8 @@ static void moduleListPicker(const Opt &option){
       const int i=top+r,y=ly+r*rowH; const bool cur=(i==sel);
       if(cur){ drawRowHighlight(px+8,y,pw-16,rowH-4); }
       const int box=20,bx=px+30,by=y+(rowH-4-box)/2;
-      border(bx,by,box,box,2,cur?COL_SEL:COL_DIM);
-      if(enabled[i]) fillRect(bx+5,by+5,box-10,box-10,COL_VAL);
+      roundedPanel(bx,by,box,box,COL_CARD,cur?COL_SEL:COL_DIM,4,2);
+      if(enabled[i])roundedRect(bx+5,by+5,box-10,box-10,2,COL_VAL);
       drawText(g_font,px+70,y+(rowH-fontHeight(g_font))/2,modules[i].c_str(),cur?COL_VAL:COL_TXT);
     }
     if(count>vis){
@@ -4088,13 +4103,13 @@ static bool transferFrame(TransferState &state){
   }
   std::string current;{std::lock_guard<std::mutex> lock(state.details);current=state.current;}
   clearUiBackground();drawLocalizedHeader("File transfer",nullptr);
-  drawTextC(g_font_sm,SW/2,settingsListY()+28,
-            ellipsizedText(g_font_sm,current,SW-160).c_str(),COL_DIM);
   const int width=SW*2/3,x=(SW-width)/2,y=SH/2-24,height=42;
-  border(x,y,width,height,2,COL_SEL);
+  glassPanel(x-32,settingsListY(),width+64,y+132-settingsListY());
+  drawTextC(g_font_sm,SW/2,settingsListY()+28,
+            ellipsizedText(g_font_sm,current,width).c_str(),COL_DIM);
   const std::uint64_t done=state.done.load(),total=state.total.load();
   const std::uint64_t progress=total?std::min(done,total):0;
-  fillRect(x+3,y+3,total?(int)((width-6)*progress/total):0,height-6,COL_HI);
+  drawProgressBar(x,y,width,height,total?(double)progress/total:0.0);
   char status[96];
   snprintf(status,sizeof(status),"%d%%  -  %.1f / %.1f MiB",
            total?(int)(progress*100/total):0,done/1048576.0,total/1048576.0);
@@ -4740,8 +4755,12 @@ static bool runFileBrowser(std::string *selectedImage=nullptr,const std::string 
         FootItem footer[]={{g_gA,"Open",FA_NONE},{g_gPlus,"Safely eject",FA_NONE},{g_gB,"Back",FA_NONE}};
         drawFooterHints(footer,3,SH-26);
       }else{
-        FootItem footer[]={{g_gA,"Open",FA_NONE},{g_gX,"Actions",FA_NONE},{g_gY,"Paste",FA_NONE},{g_gB,"Back",FA_NONE}};
-        drawFooterHints(footer,4,SH-26);
+        FootItem footer[4]={{g_gA,"Select",FA_NONE}};int hintCount=1;
+        if(items[sel].kind==BrowserItemKind::File||items[sel].kind==BrowserItemKind::Directory)
+          footer[hintCount++]={g_gX,"Actions",FA_NONE};
+        if(!current.empty()&&!g_fileClipboard.path.empty())footer[hintCount++]={g_gY,"Paste",FA_NONE};
+        footer[hintCount++]={g_gB,"Back",FA_NONE};
+        drawFooterHints(footer,hintCount,SH-26);
       }
       drawFadeIn();presentUi();waitForNextFrame();
     }
@@ -4863,14 +4882,15 @@ static void launcherSettingsScreen() {
     const int buttonX=(SW-buttonWidth)/2;
     const int buttonY=std::min(SH-buttonHeight-104,listY+visible*rowH+24);
     const bool updateSelected=sel==updateRow;
-    fillRect(buttonX,buttonY,buttonWidth,buttonHeight,updateSelected?COL_FOCUS:(SDL_Color){35,40,50,225});
-    border(buttonX,buttonY,buttonWidth,buttonHeight,2,updateSelected?COL_SEL:COL_DIM);
+    drawButtonPanel(buttonX,buttonY,buttonWidth,buttonHeight,updateSelected);
     drawTextC(g_font,SW/2,buttonY+(buttonHeight-fontHeight(g_font))/2,
               "Check for Updates",updateSelected?COL_VAL:COL_TXT);
     const std::string status=launcherUpdateStatusText();
     drawTextC(g_font_sm,SW/2,buttonY+buttonHeight+8,status.c_str(),updateSelected?COL_VAL:COL_DIM);
-    FootItem helpFooter[]={{g_gA,"Choose",FA_NONE},{g_gX,"Help",FA_NONE},{g_gY,"Reset",FA_NONE},{g_gB,"Back",FA_NONE}};
-    drawFooterHints(helpFooter,4,SH-26);
+    FootItem helpFooter[4]={{g_gA,"Choose",FA_NONE},{g_gX,"Help",FA_NONE}};int hintCount=2;
+    if(sel<optionCount&&canResetOption(S_launcher[sel]))helpFooter[hintCount++]={g_gY,"Reset",FA_NONE};
+    helpFooter[hintCount++]={g_gB,"Back",FA_NONE};
+    drawFooterHints(helpFooter,hintCount,SH-26);
     drawFadeIn(); presentUi(); waitForNextFrame();
   }
 }
@@ -5479,7 +5499,7 @@ static void drawToastOverlay(){
   if(g_toastMessage.empty())return;
   if(SDL_TICKS_PASSED(SDL_GetTicks(),g_toastUntil)){g_toastMessage.clear();return;}
   const int pw=std::min(820,SW-32),ph=120,px=(SW-pw)/2,py=(SH-ph)/2;
-  glassPanel(px,py,pw,ph);border(px,py,pw,ph,2,COL_HI);
+  glassPanel(px,py,pw,ph);
   const std::string shown=fittedText(g_font,g_toastMessage,pw-40);
   drawTextC(g_font,SW/2,py+(ph-fontHeight(g_font))/2,shown.c_str(),COL_TXT);
 }
@@ -5723,8 +5743,7 @@ static void runUpdateScreen(){
     }
     if(snapshot.state==LauncherUpdateState::Downloading&&snapshot.total){
       int barX=panelX+32,barY=panelY+150,barW=panelW-64;
-      fillRect(barX,barY,barW,14,(SDL_Color){35,44,62,255});
-      fillRect(barX,barY,(int)(barW*std::min<std::uint64_t>(snapshot.downloaded,snapshot.total)/snapshot.total),14,COL_SEL);
+      drawProgressBar(barX,barY,barW,14,(double)snapshot.downloaded/snapshot.total);
     }
     if(!snapshot.release.notes.empty()){
       int notesY=panelY+(snapshot.state==LauncherUpdateState::Downloading?190:150);
@@ -5759,7 +5778,7 @@ static void drawUpdateNotification(){
   if(g_updateNoticeTag.empty()||SDL_TICKS_PASSED(SDL_GetTicks(),g_updateNoticeUntil))return;
   int width=std::min(SW-32,g_launcherPortrait?SW-40:620),height=g_launcherPortrait?108:82;
   int x=(SW-width)/2,y=topBarH()+16;
-  fillRect(x,y,width,height,COL_CARD);border(x,y,width,height,2,COL_SEL);
+  roundedPanel(x,y,width,height,COL_CARD,COL_SEL);
   std::string title=fittedText(g_font,"Vita3K-nx "+g_updateNoticeTag+" is available",width-36);
   drawTextC(g_font,SW/2,y+14,title.c_str(),COL_VAL);
   drawTextC(g_font_sm,SW/2,y+height-fontHeight(g_font_sm)-13,"Settings > Launcher > Check for Updates",COL_DIM);
@@ -5784,7 +5803,11 @@ static bool runCancellableNetworkTask(const char *title,const std::string &detai
       if((event.type==SDL_CONTROLLERBUTTONDOWN&&event.cbutton.button==BTN_CANCEL)||
          (touch==TOUCH_TAP&&y>=SH-80))cancel.store(true,std::memory_order_release);}
     clearUiBackground();drawLocalizedHeader(title,nullptr);
-    const auto lines=wrapTextLines(g_font,detail,SW-160);int y=SH/2-(int)lines.size()*24;
+    const int panelWidth=std::min(940,SW-64),lineHeight=fontHeight(g_font)+8;
+    const auto lines=wrapTextLines(g_font,detail,panelWidth-64);
+    const int panelHeight=std::max(140,(int)lines.size()*lineHeight+64);
+    glassPanel((SW-panelWidth)/2,(SH-panelHeight)/2,panelWidth,panelHeight);
+    int y=(SH-(int)lines.size()*lineHeight)/2;
     for(const std::string &line:lines){drawTextC(g_font,SW/2,y,line.c_str(),COL_TXT);y+=fontHeight(g_font)+8;}
     FootItem footer[]={{g_gB,"Cancel",FA_NONE}};drawFooterHints(footer,1,SH-26);
     drawFadeIn();presentUi();waitForNextFrame();
@@ -5804,7 +5827,8 @@ static GameDetailLayout gameDetailLayout(){
   return {{56,top+(bottom-top-height)/2,width,height},{360,top,SW-416,bottom-top}};
 }
 static void drawArtworkPreview(SDL_Texture *texture,const SDL_Rect &rect,bool selected=false){
-  glassPanel(rect.x-10,rect.y-10,rect.w+20,rect.h+20);
+  if(selected)roundedPanel(rect.x-10,rect.y-10,rect.w+20,rect.h+20,COL_PANEL,COL_SEL);
+  else glassPanel(rect.x-10,rect.y-10,rect.w+20,rect.h+20);
   fillRect(rect.x,rect.y,rect.w,rect.h,COL_CARD);
   if(texture){
     SDL_SetTextureAlphaMod(texture,255);SDL_SetTextureColorMod(texture,255,255,255);
@@ -5813,7 +5837,6 @@ static void drawArtworkPreview(SDL_Texture *texture,const SDL_Rect &rect,bool se
     drawTextC(g_font_sm,rect.x+rect.w/2,rect.y+(rect.h-fontHeight(g_font_sm))/2,
       LauncherLocalization::Translate("NO COVER").data(),COL_DIM);
   }
-  if(selected)border(rect.x-2,rect.y-2,rect.w+4,rect.h+4,2,COL_SEL);
 }
 static void drawGamePreview(Game &game,const SDL_Rect &rect){
   g_cover_budget=1;ensureCover(game);
@@ -6097,11 +6120,11 @@ static void downloadAllCovers() {
     const int completed=done.load(std::memory_order_acquire);
     const int index=std::min(current.load(std::memory_order_acquire),(int)tasks.size()-1);
     clearUiBackground();drawLocalizedHeader("Download covers",nullptr);
+    glassPanel(80,SH/2-128,SW-160,252);
     drawTextC(g_font,SW/2,SH/2-96,("Downloading  "+std::to_string(std::min(completed+1,(int)tasks.size()))+" / "+std::to_string(tasks.size())).c_str(),COL_VAL);
     drawTitleCell(SW/2,SW-260,SH/2-44,tasks[index].title,true,COL_TXT);
-    const int bw=SW-360,bx=180,by=SH/2+16,bh=26;
-    fillRect(bx,by,bw,bh,(SDL_Color){40,44,54,255});border(bx,by,bw,bh,2,COL_DIM);
-    fillRect(bx,by,(int)(bw*(long long)completed/tasks.size()),bh,COL_SEL);
+    const int bw=SW-240,bx=120,by=SH/2+16,bh=26;
+    drawProgressBar(bx,by,bw,bh,(double)completed/tasks.size());
     char status[80];snprintf(status,sizeof(status),"%d downloaded    %d failed",
       downloaded.load(),failed.load());drawTextC(g_font_sm,SW/2,by+46,status,COL_DIM);
     FootItem footer[]={{g_gB,"Cancel",FA_NONE}};drawFooterHints(footer,1,SH-26);
@@ -6169,8 +6192,8 @@ static bool pickIcon(Game &g, char *outPath, size_t outSize) {
     clearUiBackground();
     drawLocalizedHeader("Choose an icon", g.title.c_str());
     for(int i=0;i<n;i++){ int r=i/cols,c=i%cols, x=x0+c*(cell+gap), y=y0+r*(cell+gap);
-      glassPanel(x-8,y-8,cell+16,cell+16);
-      if(i==sel)border(x-2,y-2,cell+4,cell+4,2,COL_SEL);
+      if(i==sel)roundedPanel(x-8,y-8,cell+16,cell+16,COL_PANEL,COL_SEL);
+      else glassPanel(x-8,y-8,cell+16,cell+16);
       fillRect(x,y,cell,cell,COL_CARD);
       if(tex[i]){ SDL_Rect d{x,y,cell,cell}; SDL_RenderCopy(g_ren,tex[i],nullptr,&d); }
       else drawTextC(g_font_sm,x+cell/2,y+cell/2,"?",COL_DIM);
@@ -6612,12 +6635,12 @@ static void drawSetupProgress(int pct, const char *msg, const char *detail, bool
   const int bw = SW * 2 / 3, bx = (SW - bw) / 2, bh = 36;
   const bool hasDetail = detail && *detail;
   const int by = SH / 2 + (hasDetail ? 56 : 40);
+  glassPanel(bx-40,SH/2-208,bw+80,400);
   if (g_logo) { int s = 140; SDL_Rect ld = {(SW - s) / 2, SH / 2 - 180, s, s}; SDL_RenderCopy(g_ren, g_logo, nullptr, &ld); }
   drawTextC(g_font, SW / 2, SH / 2 - 14, fittedText(g_font, msg ? msg : "", bw).c_str(), COL_TXT);
   if (hasDetail)
     drawTextC(g_font_sm, SW / 2, SH / 2 + 22, fittedText(g_font_sm, detail, bw).c_str(), COL_DIM);
-  border(bx, by, bw, bh, 2, COL_SEL);
-  fillRect(bx + 3, by + 3, (bw - 6) * pct / 100, bh - 6, COL_HI);
+  drawProgressBar(bx,by,bw,bh,pct/100.0);
   char t[16]; snprintf(t, sizeof(t), "%d%%", pct);
   drawTextC(g_font_sm, SW / 2, by + bh + 14, t, COL_DIM);
   if (cancellable) {
@@ -6656,7 +6679,7 @@ static void fwProgressCb(int idx, int total, int pct, const char *label,
 // first-start prompt; returns when the user backs out or an install starts.
 static void firmwareSetupFlow() {
   bool installed = firmware_is_installed();
-  const int cy = 138;
+  const int cy = topBarH()+58;
   const int bw = SW * 2 / 3, bh = 64, bx = (SW - bw) / 2;
   const int by0 = cy + 168;              // "Download & install" button
   const int by1 = by0 + bh + 14;         // "Import from storage" button
@@ -6753,23 +6776,20 @@ static void firmwareSetupFlow() {
     }
     clearUiBackground();
     drawLocalizedHeader("Firmware setup", nullptr);
+    glassPanel(bx-24,cy-22,bw+48,154);
     SDL_Color sc = installed ? (SDL_Color){120,215,130,255} : (SDL_Color){240,160,95,255};
     char st[96]; snprintf(st,sizeof(st),"Firmware: %s", installed?"Installed":"Not installed");
     drawTextC(g_font_big, SW/2, cy, st, sc);
     drawTextC(g_font_sm, SW/2, cy+58, "The PS Vita firmware provides system fonts, video", COL_DIM);
     drawTextC(g_font_sm, SW/2, cy+84, "playback and the on-screen dialogs games rely on.", COL_DIM);
-    // two action buttons; the selected one gets the amber accent border.
     { bool cur=sel==0;
-      fillRect(bx,by0,bw,bh, cur?(SDL_Color){52,100,52,245}:(SDL_Color){38,64,40,215});
-      border(bx,by0,bw,bh,2, cur?COL_SEL:COL_DIM);
+      drawButtonPanel(bx,by0,bw,bh,cur);
       drawTextC(g_font, SW/2, by0+(bh-fontHeight(g_font))/2, "Download & install firmware  (~350 MB)", cur?COL_VAL:COL_TXT); }
     { bool cur=sel==1;
-      fillRect(bx,by1,bw,bh, cur?(SDL_Color){52,100,52,245}:(SDL_Color){38,64,40,215});
-      border(bx,by1,bw,bh,2, cur?COL_SEL:COL_DIM);
+      drawButtonPanel(bx,by1,bw,bh,cur);
       drawTextC(g_font, SW/2, by1+(bh-fontHeight(g_font))/2, "Open file manager for PUP files", cur?COL_VAL:COL_TXT); }
     { bool cur=sel==2;
-      fillRect(bx,by2,bw,bh, cur?(SDL_Color){52,100,52,245}:(SDL_Color){38,64,40,215});
-      border(bx,by2,bw,bh,2, cur?COL_SEL:COL_DIM);
+      drawButtonPanel(bx,by2,bw,bh,cur);
       drawTextC(g_font, SW/2, by2+(bh-fontHeight(g_font))/2, "Install staged PUP files", cur?COL_VAL:COL_TXT); }
     FootItem footer[]={{g_gA,"Select",FA_LAUNCH},{g_gB,"Back",FA_QUIT}};
     drawFooterHints(footer,2,SH-26);
@@ -7027,10 +7047,11 @@ static void runAppletInstaller(){
     SDL_Event event;while(pollUiEvent(event)){pumpStick(event);int x=0,y=0;const TouchKind touch=touchFeed(event,&x,&y);
       if(touch==TOUCH_TAP&&x>=buttonX&&x<buttonX+buttonWidth&&y>=buttonY&&y<buttonY+buttonHeight&&state!=State::Installing&&state!=State::Installed)install();
       if(event.type==SDL_CONTROLLERBUTTONDOWN){
-        if(event.cbutton.button==BTN_CONFIRM&&state!=State::Installing&&state!=State::Installed)install();
+        if(event.cbutton.button==BTN_CONFIRM&&state==State::Installed){finishWorker();return;}
+        else if(event.cbutton.button==BTN_CONFIRM&&state!=State::Installing)install();
         else if(event.cbutton.button==BTN_CANCEL&&state!=State::Installing){finishWorker();return;}
       }}
-    clearUiBackground();drawLocalizedHeader("Applet mode installer",nullptr);glassPanel(panelX,panelY,panelWidth,panelHeight);border(panelX,panelY,panelWidth,panelHeight,2,COL_SEL);
+    clearUiBackground();drawLocalizedHeader("Applet mode installer",nullptr);glassPanel(panelX,panelY,panelWidth,panelHeight);
     const int textWidth=panelWidth-(100),lineHeight=32;
     std::vector<std::string> messages;
     auto localized=[](const char *source){return std::string(LauncherLocalization::Translate(source));};
@@ -7042,12 +7063,13 @@ static void runAppletInstaller(){
     for(const std::string &message:messages){const auto lines=wrapTextLines(g_font,message,textWidth);
       for(const std::string &line:lines){drawTextC(g_font,SW/2,textY,line.c_str(),state==State::Failed?SDL_Color{255,155,155,255}:COL_TXT);textY+=lineHeight;}textY+=12;}
     const bool installed=state==State::Installed,failed=state==State::Failed;
-    fillRect(buttonX,buttonY,buttonWidth,buttonHeight,installed?SDL_Color{30,92,58,240}:failed?SDL_Color{105,48,48,240}:COL_FOCUS);
-    border(buttonX,buttonY,buttonWidth,buttonHeight,3,installed?SDL_Color{100,225,145,255}:failed?SDL_Color{235,125,125,255}:COL_SEL);
+    roundedPanel(buttonX,buttonY,buttonWidth,buttonHeight,
+      installed?SDL_Color{30,92,58,255}:failed?SDL_Color{105,48,48,255}:COL_FOCUS,
+      installed?SDL_Color{100,225,145,255}:failed?SDL_Color{235,125,125,255}:COL_SEL,6);
     const char *button=installed?"Installed":state==State::Installing?"Installing HOME Menu shortcut...":failed?"Try again":"Install to HOME Menu";
     TTF_Font *buttonFont=textW(g_font_big,LauncherLocalization::Translate(button).data())<=buttonWidth-48?g_font_big:g_font;
     drawTextC(buttonFont,SW/2,buttonY+(buttonHeight-fontHeight(buttonFont))/2,LauncherLocalization::Translate(button).data(),COL_VAL);
-    if(state==State::Installed){FootItem footer[]={{g_gB,"Exit",FA_NONE}};drawFooterHints(footer,1,SH-26);}
+    if(state==State::Installed){FootItem footer[]={{g_gA,"Exit",FA_NONE}};drawFooterHints(footer,1,SH-26);}
     else if(state!=State::Installing){FootItem footer[]={{g_gA,failed?"Try again":"Install",FA_NONE},{g_gB,"Exit",FA_NONE}};drawFooterHints(footer,2,SH-26);}
     drawFadeIn();presentUi();waitForNextFrame();
   }
