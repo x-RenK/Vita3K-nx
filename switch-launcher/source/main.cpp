@@ -565,10 +565,13 @@ static bool writeConfigYml(const std::vector<KV> &eff) {
 // ---------------------------------------------------------------------------
 static SDL_Window   *g_win = nullptr;
 static SDL_Renderer *g_ren = nullptr;
-static TTF_Font     *g_font = nullptr, *g_font_sm = nullptr, *g_font_big = nullptr;
+static TTF_Font     *g_font = nullptr, *g_font_sm = nullptr, *g_font_big = nullptr, *g_font_caption = nullptr;
 static SDL_Texture  *g_logo = nullptr;
 static int SW = 1280, SH = 720;
 static int g_outputW = 1280, g_outputH = 720;
+static float g_uiScale = 1.0f;
+static float g_fontScale = 1.0f;
+static bool g_presentVsync = false;
 static int g_launcherRotation = 0;
 static bool g_launcherPortrait = false;
 static SDL_Texture *g_uiTarget = nullptr;
@@ -597,46 +600,31 @@ static void drawToastOverlay();
 static bool configureLauncherOrientation(int rotation) {
   if(!g_ren || g_outputW<1 || g_outputH<1) return false;
   if(rotation<0||rotation>3) rotation=0;
-  if(rotation==0){
-    SDL_SetRenderTarget(g_ren,nullptr);
-    if(g_uiTarget) SDL_DestroyTexture(g_uiTarget);
-    g_uiTarget=nullptr;
-    g_launcherRotation=0;
-    g_launcherPortrait=false;
-    SW=g_outputW;
-    SH=g_outputH;
-    SDL_RenderSetViewport(g_ren,nullptr);
-    SDL_RenderSetScale(g_ren,1.0f,1.0f);
-    return true;
-  }
   const bool portrait=(rotation&1)!=0;
-  const int logicalWidth=portrait?g_outputH:g_outputW;
-  const int logicalHeight=portrait?g_outputW:g_outputH;
-  if(g_uiTarget && SW==logicalWidth && SH==logicalHeight){
-    g_launcherRotation=rotation;
-    g_launcherPortrait=portrait;
-    SDL_SetRenderTarget(g_ren,g_uiTarget);
-    return true;
+  const int targetWidth=portrait?g_outputH:g_outputW;
+  const int targetHeight=portrait?g_outputW:g_outputH;
+  SDL_Texture *target=nullptr;
+  if(rotation){
+    int width=0,height=0;
+    if(g_uiTarget) SDL_QueryTexture(g_uiTarget,nullptr,nullptr,&width,&height);
+    target=width==targetWidth&&height==targetHeight?g_uiTarget:
+      SDL_CreateTexture(g_ren,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,targetWidth,targetHeight);
+    if(!target) return false;
+    SDL_SetTextureBlendMode(target,SDL_BLENDMODE_NONE);
   }
-  SDL_Texture *previous=g_uiTarget;
-  SDL_SetRenderTarget(g_ren,nullptr);
-  SDL_Texture *target=SDL_CreateTexture(g_ren,SDL_PIXELFORMAT_RGBA8888,
-                                        SDL_TEXTUREACCESS_TARGET,logicalWidth,logicalHeight);
-  if(!target){ if(previous) SDL_SetRenderTarget(g_ren,previous); return false; }
-  SDL_SetTextureBlendMode(target,SDL_BLENDMODE_NONE);
   if(SDL_SetRenderTarget(g_ren,target)!=0){
-    SDL_DestroyTexture(target);
-    if(previous) SDL_SetRenderTarget(g_ren,previous);
+    if(target&&target!=g_uiTarget) SDL_DestroyTexture(target);
     return false;
   }
+  if(g_uiTarget&&g_uiTarget!=target) SDL_DestroyTexture(g_uiTarget);
   g_uiTarget=target;
   g_launcherRotation=rotation;
   g_launcherPortrait=portrait;
-  SW=logicalWidth;
-  SH=logicalHeight;
-  if(previous) SDL_DestroyTexture(previous);
+  SW=portrait?720:1280;
+  SH=portrait?1280:720;
+  g_uiScale=std::min(g_outputW/1280.0f,g_outputH/720.0f);
   SDL_RenderSetViewport(g_ren,nullptr);
-  SDL_RenderSetScale(g_ren,1.0f,1.0f);
+  SDL_RenderSetScale(g_ren,g_uiScale,g_uiScale);
   return true;
 }
 
@@ -645,6 +633,7 @@ static void presentUi() {
   if(!g_uiTarget){ SDL_RenderPresent(g_ren); return; }
   SDL_RenderSetClipRect(g_ren,nullptr);
   SDL_SetRenderTarget(g_ren,nullptr);
+  SDL_RenderSetScale(g_ren,1.0f,1.0f);
   SDL_SetRenderDrawColor(g_ren,0,0,0,255);
   SDL_RenderClear(g_ren);
   SDL_Rect destination=(g_launcherRotation&1)
@@ -653,6 +642,7 @@ static void presentUi() {
   SDL_RenderCopyEx(g_ren,g_uiTarget,nullptr,&destination,g_launcherRotation*90.0,nullptr,SDL_FLIP_NONE);
   SDL_RenderPresent(g_ren);
   SDL_SetRenderTarget(g_ren,g_uiTarget);
+  SDL_RenderSetScale(g_ren,g_uiScale,g_uiScale);
 }
 
 enum class LauncherTheme { Bubbles, Glow, Xmb, Classic, Oled };
@@ -665,6 +655,8 @@ static bool g_showCompatBadges = true;
 static int g_gridColumns = 5;
 static int g_gridRows = 2;
 static SDL_Texture *g_glowTexture = nullptr;
+static SDL_Texture *g_roundTexture = nullptr;
+static int g_footN=0;
 
 static SDL_Color COL_BG    = { 8, 12, 24, 255 };
 static SDL_Color COL_TXT   = { 235, 239, 247, 255 };
@@ -676,7 +668,16 @@ static SDL_Color COL_PANEL = { 16, 23, 39, 184 };
 static SDL_Color COL_CARD  = { 22, 30, 49, 214 };
 static SDL_Color COL_FOCUS = { 28, 69, 92, 210 };
 
-static void fillRect(int x,int y,int w,int h, SDL_Color c){ SDL_SetRenderDrawColor(g_ren,c.r,c.g,c.b,c.a); SDL_Rect r={x,y,w,h}; SDL_RenderFillRect(g_ren,&r); }
+static SDL_FRect pixelAlignedRect(int x,int y,int w,int h){
+  float sx=1,sy=1;SDL_RenderGetScale(g_ren,&sx,&sy);
+  const float left=std::round(x*sx),top=std::round(y*sy);
+  return {left/sx,top/sy,(std::round((x+w)*sx)-left)/sx,(std::round((y+h)*sy)-top)/sy};
+}
+static void fillRect(int x,int y,int w,int h, SDL_Color c){
+  if(w<=0||h<=0)return;
+  const SDL_FRect rect=pixelAlignedRect(x,y,w,h);
+  SDL_SetRenderDrawColor(g_ren,c.r,c.g,c.b,c.a);SDL_RenderFillRectF(g_ren,&rect);
+}
 static void border(int x,int y,int w,int h,int t, SDL_Color c){ SDL_SetRenderDrawColor(g_ren,c.r,c.g,c.b,c.a); for(int i=0;i<t;i++){ SDL_Rect r={x-i,y-i,w+2*i,h+2*i}; SDL_RenderDrawRect(g_ren,&r); } }
 
 struct TextKey {
@@ -699,8 +700,8 @@ struct TextKeyHash {
 
 struct TextEntry {
   SDL_Texture *texture;
-  int width;
-  int height;
+  float width;
+  float height;
   size_t bytes;
   Uint64 use;
 };
@@ -817,23 +818,23 @@ static void applyLauncherAppearance() {
   if (g_launcherTheme == LauncherTheme::Classic) {
     COL_BG={22,24,30,255}; COL_TXT={228,230,235,255}; COL_DIM={150,155,165,255};
     COL_HI={96,200,255,255}; COL_VAL={255,210,100,255}; COL_SEL={255,170,0,255};
-    COL_PANEL={28,31,40,255}; COL_CARD={24,26,34,255}; COL_FOCUS={66,56,30,235};
+    COL_PANEL={28,31,40,255}; COL_CARD={24,26,34,255}; COL_FOCUS={66,56,30,255};
   } else if (g_launcherTheme == LauncherTheme::Oled) {
     COL_BG={0,0,0,255}; COL_TXT={245,247,249,255}; COL_DIM={145,151,158,255};
     COL_HI={105,220,255,255}; COL_VAL={255,255,255,255}; COL_SEL={0,210,190,255};
-    COL_PANEL={4,4,5,248}; COL_CARD={8,8,10,250}; COL_FOCUS={0,58,53,245};
+    COL_PANEL={4,4,5,255}; COL_CARD={8,8,10,250}; COL_FOCUS={0,58,53,255};
   } else if (g_launcherTheme == LauncherTheme::Bubbles) {
     COL_BG={0,8,16,255}; COL_TXT={235,248,255,255}; COL_DIM={143,192,216,255};
     COL_HI={118,222,255,255}; COL_VAL={194,239,255,255}; COL_SEL={61,183,235,255};
-    COL_PANEL={4,31,50,190}; COL_CARD={5,35,56,218}; COL_FOCUS={12,76,108,220};
+    COL_PANEL={4,31,50,255}; COL_CARD={5,35,56,218}; COL_FOCUS={12,76,108,255};
   } else if (g_launcherTheme == LauncherTheme::Glow) {
     COL_BG={8,12,24,255}; COL_TXT={235,239,247,255}; COL_DIM={151,163,184,255};
     COL_HI={100,211,255,255}; COL_VAL={255,215,120,255}; COL_SEL={116,200,255,255};
-    COL_PANEL={16,23,39,184}; COL_CARD={22,30,49,214}; COL_FOCUS={28,69,92,208};
+    COL_PANEL={16,23,39,255}; COL_CARD={22,30,49,214}; COL_FOCUS={28,69,92,255};
   } else {
-    COL_BG={3,37,102,255}; COL_TXT={239,248,255,255}; COL_DIM={164,205,234,255};
-    COL_HI={137,225,255,255}; COL_VAL={245,252,255,255}; COL_SEL={89,194,247,255};
-    COL_PANEL={2,32,86,184}; COL_CARD={4,44,102,218}; COL_FOCUS={15,91,151,220};
+    COL_BG={8,51,104,255}; COL_TXT={242,247,255,255}; COL_DIM={180,204,227,255};
+    COL_HI={137,225,255,255}; COL_VAL={245,252,255,255}; COL_SEL={118,213,255,255};
+    COL_PANEL={10,43,81,255}; COL_CARD={12,48,85,255}; COL_FOCUS={22,75,119,255};
   }
   if (previous != g_launcherTheme && g_ren)
     clearTextCaches();
@@ -899,14 +900,17 @@ static float xmbWaveY(float x,float time,float center,float amplitude,float freq
 static void drawXmbRibbon(float time,float center,float amplitude,float frequency,float slope,float phase,
                           int halfWidth,SDL_Color color) {
   constexpr int pointCount=121;
-  std::array<SDL_Point,pointCount> points{};
+  std::array<SDL_Point,pointCount> base{},points{};
+  for(int point=0;point<pointCount;point++){
+    const float x=(float)point/(pointCount-1);
+    base[point]={(int)(x*SW),(int)(xmbWaveY(x,time,center,amplitude,frequency,slope,phase)*SH)};
+  }
   for(int offset=-halfWidth;offset<=halfWidth;offset++){
     float distance=halfWidth?fabsf((float)offset/halfWidth):0.f;
     Uint8 alpha=(Uint8)(color.a*powf(std::max(0.f,1.f-distance),1.45f));
     if(alpha<2) continue;
     for(int point=0;point<pointCount;point++){
-      float x=(float)point/(pointCount-1);
-      points[point]={(int)(x*SW),(int)(xmbWaveY(x,time,center,amplitude,frequency,slope,phase)*SH)+offset};
+      points[point]={base[point].x,base[point].y+offset};
     }
     SDL_SetRenderDrawColor(g_ren,color.r,color.g,color.b,alpha);
     SDL_RenderDrawLines(g_ren,points.data(),pointCount);
@@ -943,7 +947,7 @@ static void drawXmbSparkles(float time) {
 }
 
 static void drawXmbBackground(float time) {
-  const SDL_Color top={3,37,102,255},middle={8,93,184,255},bottom={0,20,68,255};
+  const SDL_Color top={8,51,104,255},middle={12,82,139,255},bottom={6,39,82,255};
   constexpr int bands=72;
   for(int band=0;band<bands;band++){
     float y=(band+0.5f)/bands;
@@ -959,12 +963,12 @@ static void drawXmbBackground(float time) {
     fillRect(0,y0,SW,y1-y0,color);
   }
   if(g_glowTexture){
-    drawGlow(0.10f,0.43f,1.18f,55,157,255,54);
-    drawGlow(0.84f,0.38f,0.92f,41,112,228,42);
+    drawGlow(0.10f,0.43f,1.18f,55,157,255,32);
+    drawGlow(0.84f,0.38f,0.92f,41,112,228,24);
   }
   drawXmbRibbon(time,0.655f,0.082f,0.78f,-0.105f,2.15f,std::max(12,SH/18),(SDL_Color){63,166,255,31});
-  drawXmbRibbon(time,0.575f,0.074f,0.96f,0.080f,0.35f,std::max(10,SH/25),(SDL_Color){189,235,255,48});
-  drawXmbRibbon(time,0.605f,0.049f,1.28f,-0.025f,3.82f,std::max(5,SH/54),(SDL_Color){230,250,255,72});
+  drawXmbRibbon(time,0.575f,0.074f,0.96f,0.080f,0.35f,std::max(10,SH/25),(SDL_Color){189,235,255,26});
+  drawXmbRibbon(time,0.605f,0.049f,1.28f,-0.025f,3.82f,std::max(5,SH/54),(SDL_Color){230,250,255,36});
   for(int trace=0;trace<9;trace++){
     float offset=(trace-4)*0.009f;
     drawXmbFilament(time,0.588f+offset,0.083f+trace*0.0017f,0.91f,0.052f,
@@ -1046,7 +1050,26 @@ static void drawBubblesBackground(float time) {
   drawBackgroundParticles(time,(SDL_Color){164,228,255,62},24,0.008f);
 }
 
+struct TextScroll { std::string text; Uint32 since=0; };
+static std::map<std::pair<int,int>,TextScroll> g_textScroll;
+static bool g_scrollTextActive=false;
+static int textScrollOffset(int x,int y,int span,const char *text){
+  g_scrollTextActive=true;
+  if(g_textScroll.size()>64)g_textScroll.clear();
+  auto &scroll=g_textScroll[{x,y}];
+  const Uint32 now=SDL_GetTicks();
+  if(scroll.text!=text){scroll.text=text;scroll.since=now;}
+  const float travel=span/45.0f,pause=0.9f;
+  const float phase=std::fmod((now-scroll.since)/1000.0f,2*(travel+pause));
+  if(phase<pause)return 0;
+  if(phase<pause+travel)return (int)((phase-pause)*45);
+  if(phase<2*pause+travel)return span;
+  return std::max(0,span-(int)((phase-2*pause-travel)*45));
+}
+
 static void clearUiBackground() {
+  g_scrollTextActive=false;
+  g_footN=0;
   SDL_RenderSetClipRect(g_ren,nullptr);
   SDL_SetRenderDrawColor(g_ren,COL_BG.r,COL_BG.g,COL_BG.b,255);
   SDL_RenderClear(g_ren);
@@ -1073,10 +1096,46 @@ static void clearUiBackground() {
   SDL_SetTextureAlphaMod(g_glowTexture,255);
 }
 
-static void glassPanel(int x,int y,int width,int height) {
-  fillRect(x,y,width,height,COL_PANEL);
-  border(x,y,width,height,1,(SDL_Color){255,255,255,(Uint8)(hasAnimatedBackground()?28:16)});
+static void roundedRect(int x,int y,int width,int height,int radius,SDL_Color color){
+  const int r=std::min({radius,width/2,height/2});
+  if(!g_roundTexture){
+    SDL_Surface *surface=SDL_CreateRGBSurfaceWithFormat(0,32,32,32,SDL_PIXELFORMAT_RGBA32);
+    if(surface){
+      for(int py=0;py<32;py++){
+        auto *row=(Uint32*)((Uint8*)surface->pixels+py*surface->pitch);
+        for(int px=0;px<32;px++){
+          const float dx=px-15.5f,dy=py-15.5f;
+          const Uint8 alpha=(Uint8)(255*std::clamp(16.f-std::sqrt(dx*dx+dy*dy),0.f,1.f));
+          row[px]=SDL_MapRGBA(surface->format,255,255,255,alpha);
+        }
+      }
+      g_roundTexture=SDL_CreateTextureFromSurface(g_ren,surface);SDL_FreeSurface(surface);
+      if(g_roundTexture)SDL_SetTextureBlendMode(g_roundTexture,SDL_BLENDMODE_BLEND);
+    }
+  }
+  if(!g_roundTexture||r<1){fillRect(x,y,width,height,color);return;}
+  fillRect(x+r,y,width-r*2,height,color);
+  fillRect(x,y+r,r,height-r*2,color);fillRect(x+width-r,y+r,r,height-r*2,color);
+  SDL_SetTextureColorMod(g_roundTexture,color.r,color.g,color.b);SDL_SetTextureAlphaMod(g_roundTexture,color.a);
+  for(int corner=0;corner<4;corner++){
+    const SDL_Rect source={(corner&1)*16,(corner>>1)*16,16,16};
+    const SDL_FRect destination=pixelAlignedRect(x+((corner&1)?width-r:0),y+((corner>>1)?height-r:0),r,r);
+    SDL_RenderCopyF(g_ren,g_roundTexture,&source,&destination);
+  }
 }
+static void glassPanel(int x,int y,int width,int height) {
+  roundedRect(x,y,width,height,8,(SDL_Color){255,255,255,24});
+  roundedRect(x+1,y+1,width-2,height-2,7,COL_PANEL);
+}
+
+static void drawRowHighlight(int x,int y,int width,int height){
+  roundedRect(x,y,width,height,4,COL_FOCUS);
+  fillRect(x,y+height/5,3,height*3/5,COL_SEL);
+}
+
+// Layout uses 720p coordinates; text textures retain the output resolution.
+static int fontMetric(int pixels){ return (int)std::ceil(pixels/g_fontScale); }
+static int fontHeight(TTF_Font *font){ return font?fontMetric(TTF_FontHeight(font)):0; }
 
 static void drawText(TTF_Font*f,int x,int y,const char*s,SDL_Color c){
   if(!f||!s||!*s) return;
@@ -1084,24 +1143,24 @@ static void drawText(TTF_Font*f,int x,int y,const char*s,SDL_Color c){
   auto found=g_textCache.find(key);
   if(found!=g_textCache.end()){
     found->second.use=++g_textUseSerial;
-    SDL_Rect d={x,y,found->second.width,found->second.height};
-    SDL_RenderCopy(g_ren,found->second.texture,nullptr,&d);
+    SDL_FRect d={(float)x,(float)y,found->second.width,found->second.height};
+    SDL_RenderCopyF(g_ren,found->second.texture,nullptr,&d);
     return;
   }
   SDL_Surface*sf=TTF_RenderUTF8_Blended(f,s,c); if(!sf) return;
   SDL_Texture*t=SDL_CreateTextureFromSurface(g_ren,sf);
-  int w=sf->w,h=sf->h; SDL_FreeSurface(sf);
+  const size_t bytes=(size_t)sf->w*(size_t)sf->h*4;
+  const float w=sf->w/g_fontScale,h=sf->h/g_fontScale; SDL_FreeSurface(sf);
   if(!t) return;
-  rememberTextMetric(f,s,w);
-  const size_t bytes=(size_t)w*(size_t)h*4;
+  rememberTextMetric(f,s,(int)std::ceil(w));
   if(bytes<=TEXT_CACHE_BYTES){
     evictTextEntries(bytes);
     TextEntry entry{t,w,h,bytes,++g_textUseSerial};
     auto inserted=g_textCache.emplace(std::move(key),entry);
     g_textCacheBytes+=bytes;
-    SDL_Rect d={x,y,w,h}; SDL_RenderCopy(g_ren,inserted.first->second.texture,nullptr,&d);
+    SDL_FRect d={(float)x,(float)y,w,h}; SDL_RenderCopyF(g_ren,inserted.first->second.texture,nullptr,&d);
   } else {
-    SDL_Rect d={x,y,w,h}; SDL_RenderCopy(g_ren,t,nullptr,&d); SDL_DestroyTexture(t);
+    SDL_FRect d={(float)x,(float)y,w,h}; SDL_RenderCopyF(g_ren,t,nullptr,&d); SDL_DestroyTexture(t);
   }
 }
 static int textW(TTF_Font*f,const char*s){
@@ -1109,7 +1168,7 @@ static int textW(TTF_Font*f,const char*s){
   MetricKey key{f,s}; auto found=g_metricCache.find(key);
   if(found!=g_metricCache.end()){ found->second.use=++g_textUseSerial; return found->second.width; }
   int w=0,h=0; if(TTF_SizeUTF8(f,s,&w,&h)!=0) return 0;
-  rememberTextMetric(f,s,w); return w;
+  w=fontMetric(w); rememberTextMetric(f,s,w); return w;
 }
 
 static const std::string &ellipsizedText(TTF_Font *font, const std::string &text, int maxWidth) {
@@ -1190,7 +1249,10 @@ static SDL_Texture *makeFlagTex(int region,int W,int H){
   SDL_Texture *t=SDL_CreateTexture(g_ren,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,W,H);
   if(!t) return nullptr;
   SDL_SetTextureBlendMode(t,SDL_BLENDMODE_BLEND);
+  SDL_Texture *previous=SDL_GetRenderTarget(g_ren);
+  float scaleX=1.0f,scaleY=1.0f;SDL_RenderGetScale(g_ren,&scaleX,&scaleY);
   SDL_SetRenderTarget(g_ren,t);
+  SDL_RenderSetScale(g_ren,1.0f,1.0f);
   SDL_SetRenderDrawColor(g_ren,0,0,0,0); SDL_RenderClear(g_ren);
   if(region==3){                                   // Japan: white field + red disc
     fillRect(0,0,W,H,(SDL_Color){245,245,245,255});
@@ -1204,7 +1266,8 @@ static SDL_Texture *makeFlagTex(int region,int W,int H){
     for(int i=0;i<12;i++){ double a=i*6.28318/12.0; int sx=W/2+(int)(cos(a)*W*0.30), sy=H/2+(int)(sin(a)*H*0.32);
       fillRect(sx-1,sy-1,2,2,(SDL_Color){255,204,0,255}); }
   }
-  SDL_SetRenderTarget(g_ren,nullptr);
+  SDL_SetRenderTarget(g_ren,previous);
+  SDL_RenderSetScale(g_ren,scaleX,scaleY);
   return t;
 }
 static void makeFlags(){ g_flag[1]=makeFlagTex(1,36,24); g_flag[2]=makeFlagTex(2,36,24); g_flag[3]=makeFlagTex(3,36,24); }
@@ -1217,12 +1280,15 @@ static SDL_Texture *g_gA=nullptr,*g_gB=nullptr,*g_gX=nullptr,*g_gY=nullptr,
 static const int GLYPH_SS = 3;
 static SDL_Texture *makeGlyph(const char *label, bool pill){
   if(!g_font_sm || !g_font_big) return nullptr;             // no shared font -> no glyphs
-  const int S=GLYPH_SS, base=TTF_FontHeight(g_font_sm)+6;
+  const int S=GLYPH_SS, base=fontHeight(g_font_sm)+6;
   int H=base*S, W=(pill? base*8/5 : base)*S;
   SDL_Texture *t=SDL_CreateTexture(g_ren,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,W,H);
   if(!t) return nullptr;
   SDL_SetTextureBlendMode(t,SDL_BLENDMODE_BLEND);
+  SDL_Texture *previous=SDL_GetRenderTarget(g_ren);
+  float scaleX=1.0f,scaleY=1.0f;SDL_RenderGetScale(g_ren,&scaleX,&scaleY);
   SDL_SetRenderTarget(g_ren,t);
+  SDL_RenderSetScale(g_ren,1.0f,1.0f);
   SDL_SetRenderDrawColor(g_ren,0,0,0,0); SDL_RenderClear(g_ren);
   SDL_Color edge={14,16,22,255}, hi={92,99,114,255}, face={52,57,68,255}, ink={246,248,252,255};
   if(pill){                                     // concentric: dark edge -> light rim -> face
@@ -1243,7 +1309,8 @@ static SDL_Texture *makeGlyph(const char *label, bool pill){
     if(lh>0){ lw=lw*inner/lh; lh=inner; }
     SDL_Rect d={(W-lw)/2,(H-lh)/2,lw,lh}; SDL_FreeSurface(sf);
     if(lt){ SDL_RenderCopy(g_ren,lt,nullptr,&d); SDL_DestroyTexture(lt); } }
-  SDL_SetRenderTarget(g_ren,nullptr);
+  SDL_SetRenderTarget(g_ren,previous);
+  SDL_RenderSetScale(g_ren,scaleX,scaleY);
   return t;
 }
 static void makeGlyphs(){
@@ -1274,18 +1341,19 @@ static bool loadUiFonts(){
   PlFontData data{};
   if(R_FAILED(plGetSharedFontByType(&data,requestedUiFontType()))||
      !data.address||!data.size||data.size>INT_MAX) return false;
-  const int scale=SH>=1080?1:0;
   auto openFont=[&](int size){
     SDL_RWops *stream=SDL_RWFromConstMem(data.address,(int)data.size);
-    return stream?TTF_OpenFontRW(stream,1,size):nullptr;
+    return stream?TTF_OpenFontRW(stream,1,(int)std::lround(size*g_uiScale)):nullptr;
   };
-  TTF_Font *small=openFont(scale?26:20);
-  TTF_Font *normal=openFont(scale?32:26);
-  TTF_Font *large=openFont(scale?52:40);
-  if(!small||!normal||!large){
+  TTF_Font *small=openFont(20);
+  TTF_Font *normal=openFont(26);
+  TTF_Font *large=openFont(32);
+  TTF_Font *caption=openFont(14);
+  if(!small||!normal||!large||!caption){
     if(small) TTF_CloseFont(small);
     if(normal) TTF_CloseFont(normal);
     if(large) TTF_CloseFont(large);
+    if(caption) TTF_CloseFont(caption);
     return false;
   }
   clearTextCaches();
@@ -1293,9 +1361,12 @@ static bool loadUiFonts(){
   if(g_font_sm) TTF_CloseFont(g_font_sm);
   if(g_font) TTF_CloseFont(g_font);
   if(g_font_big) TTF_CloseFont(g_font_big);
+  if(g_font_caption) TTF_CloseFont(g_font_caption);
+  g_fontScale=g_uiScale;
   g_font_sm=small;
   g_font=normal;
   g_font_big=large;
+  g_font_caption=caption;
   makeGlyphs();
   return true;
 }
@@ -1303,11 +1374,18 @@ static bool loadUiFonts(){
 // --- control hints: centred row of {glyph,label}; each item's tap rect is recorded for touch.
 enum FootAct { FA_NONE, FA_LAUNCH, FA_SORT, FA_OPTIONS, FA_SETTINGS, FA_FILTER, FA_PAGEL, FA_PAGER, FA_QUIT };
 struct FootItem { SDL_Texture *glyph; const char *label; int act; bool localize=true; };
-static SDL_Rect g_footHit[10]; static int g_footAct[10]; static int g_footN=0;
-static void drawFooterHints(const FootItem *it,int n,int cy){
+static SDL_Rect g_footHit[10]; static int g_footAct[10],g_footButton[10];
+struct FooterLayout {
+  int itemWidth[10]{},gapAfter[10]{},rowStart[10]{},rowEnd[10]{},rowWidth[10]{};
+  int rowCount=0,rowSpacing=0,height=0;
+};
+static FooterLayout measureFooter(const FootItem *it,int n){
+  FooterLayout result;
+  auto &itemWidth=result.itemWidth,&gapAfter=result.gapAfter;
+  auto &rowStart=result.rowStart,&rowEnd=result.rowEnd,&rowWidth=result.rowWidth;
+  int &rowCount=result.rowCount;
   const int gap=8,pairGap=g_launcherPortrait?12:26,glyphGap=g_launcherPortrait?8:16;
-  const int fh=TTF_FontHeight(g_font_sm),maxWidth=std::max(80,SW-24);
-  int itemWidth[10]={},gapAfter[10]={};
+  const int fh=fontHeight(g_font_sm),maxWidth=std::max(80,SW-24);
   for(int i=0;i<n&&i<10;i++){
     int gw=0;if(it[i].glyph) SDL_QueryTexture(it[i].glyph,nullptr,nullptr,&gw,nullptr);gw/=GLYPH_SS;
     bool label=it[i].label&&it[i].label[0];
@@ -1315,7 +1393,6 @@ static void drawFooterHints(const FootItem *it,int n,int cy){
     itemWidth[i]=gw+(label?gap+textW(g_font_sm,shown.data()):0);
     gapAfter[i]=label?pairGap:glyphGap;
   }
-  int rowStart[10]={},rowEnd[10]={},rowWidth[10]={},rowCount=0;
   for(int first=0;first<n&&first<10;){
     int last=first,width=0;
     while(last<n&&last<10){
@@ -1325,7 +1402,18 @@ static void drawFooterHints(const FootItem *it,int n,int cy){
     }
     rowStart[rowCount]=first;rowEnd[rowCount]=last;rowWidth[rowCount]=width;rowCount++;first=last;
   }
-  const int rowSpacing=fh+14;
+  result.rowSpacing=fh+22;
+  result.height=(rowCount-1)*result.rowSpacing+fh+32;
+  return result;
+}
+static void drawFooterHints(const FootItem *it,int n,int cy){
+  const FooterLayout layout=measureFooter(it,n);
+  const auto &rowStart=layout.rowStart,&rowEnd=layout.rowEnd,&rowWidth=layout.rowWidth,&gapAfter=layout.gapAfter;
+  const int rowCount=layout.rowCount,rowSpacing=layout.rowSpacing,fh=fontHeight(g_font_sm),gap=8;
+  if(cy>=SH-40){
+    fillRect(0,SH-layout.height,SW,layout.height,COL_PANEL);
+    fillRect(0,SH-layout.height,SW,1,(SDL_Color){255,255,255,18});
+  }
   g_footN=0;
   for(int row=0;row<rowCount;row++){
     int rowY=cy-(rowCount-1-row)*rowSpacing;
@@ -1336,16 +1424,40 @@ static void drawFooterHints(const FootItem *it,int n,int cy){
       if(it[i].glyph){SDL_Rect d={x,rowY-gh/2,gw,gh};SDL_RenderCopy(g_ren,it[i].glyph,nullptr,&d);}
       x+=gw;bool label=it[i].label&&it[i].label[0];
       if(label){const std::string_view shown=it[i].localize?LauncherLocalization::Translate(it[i].label):std::string_view(it[i].label);
-        x+=gap;drawText(g_font_sm,x,rowY-fh/2,shown.data(),COL_DIM);x+=textW(g_font_sm,shown.data());}
-      if(g_footN<10){g_footHit[g_footN]={x0-6,rowY-std::max(gh,fh)/2-8,(x-x0)+12,std::max(gh,fh)+16};g_footAct[g_footN]=it[i].act;g_footN++;}
+        x+=gap;drawText(g_font_sm,x,rowY-fh/2,shown.data(),(i==0?COL_TXT:COL_DIM));x+=textW(g_font_sm,shown.data());}
+      if(g_footN<10){
+        g_footHit[g_footN]={x0-4,rowY-std::max(gh,fh)/2-8,(x-x0)+8,std::max(gh,fh)+16};
+        g_footAct[g_footN]=it[i].act;
+        SDL_Texture *glyph=it[i].glyph;
+        g_footButton[g_footN]=!glyph?-1:glyph==g_gA?BTN_CONFIRM:glyph==g_gB?BTN_CANCEL:
+          glyph==g_gX?BTN_SETTINGS:glyph==g_gY?SDL_CONTROLLER_BUTTON_X:
+          glyph==g_gPlus?SDL_CONTROLLER_BUTTON_START:glyph==g_gMinus?SDL_CONTROLLER_BUTTON_BACK:
+          glyph==g_gL?SDL_CONTROLLER_BUTTON_LEFTSHOULDER:glyph==g_gR?SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+          glyph==g_gLeft?SDL_CONTROLLER_BUTTON_DPAD_LEFT:glyph==g_gRight?SDL_CONTROLLER_BUTTON_DPAD_RIGHT:-1;
+        g_footN++;
+      }
       if(i+1<rowEnd[row])x+=gapAfter[i];
     }
   }
+}
+static std::array<FootItem,8> libraryFooter(){
+  return {{{g_gA,"Launch",FA_LAUNCH},{g_gY,"Sort",FA_SORT},{g_gX,"Settings",FA_SETTINGS},
+    {g_gPlus,"Game Menu",FA_OPTIONS},{g_gMinus,"Filter",FA_FILTER},{g_gL,"",FA_PAGEL},
+    {g_gR,"Page",FA_PAGER},{g_gB,"Quit",FA_QUIT}}};
 }
 static int footTapAct(int px,int py){
   for(int i=0;i<g_footN;i++){ SDL_Rect &r=g_footHit[i];
     if(px>=r.x && px<r.x+r.w && py>=r.y && py<r.y+r.h) return g_footAct[i]; }
   return FA_NONE;
+}
+static bool pressFooterButton(int x,int y){
+  for(int i=0;i<g_footN;i++){
+    const SDL_Rect &rect=g_footHit[i];
+    if(g_footButton[i]<0||x<rect.x||x>=rect.x+rect.w||y<rect.y||y>=rect.y+rect.h)continue;
+    SDL_Event press{};press.type=SDL_CONTROLLERBUTTONDOWN;press.cbutton.button=(Uint8)g_footButton[i];
+    return SDL_PushEvent(&press)==1;
+  }
+  return false;
 }
 
 // --- touchscreen gestures (handheld). devkitPro SDL2 emits SDL_FINGER* as 0..1 coords; xSW/SH = pixels.
@@ -1401,7 +1513,8 @@ static TouchKind touchFeed(const SDL_Event &e,int *ox,int *oy){
       return (g_touch.vertical?remaining:dy)<0?TOUCH_SCROLL_UP:TOUCH_SCROLL_DOWN;
     }
     if(fabsf(dx)>=SWIPE_DX && fabsf(dx)>fabsf(dy)*1.5f) return dx<0?TOUCH_SWIPE_L:TOUCH_SWIPE_R;
-    if(fabsf(dx)<=TAP_MOVE && fabsf(dy)<=TAP_MOVE && dt<=TAP_MS) return TOUCH_TAP;
+    if(fabsf(dx)<=TAP_MOVE && fabsf(dy)<=TAP_MOVE && dt<=TAP_MS)
+      return pressFooterButton((int)ux,(int)uy)?TOUCH_NONE:TOUCH_TAP;
   }
   return TOUCH_NONE;
 }
@@ -1563,8 +1676,9 @@ static void waitForNextFrame(bool forceAnimation=false) {
   for(;;){
     const Uint32 now=SDL_GetTicks();
     const bool recentInput=now-g_lastUiActivity<240;
-    const bool animate=forceAnimation || (g_uiAnimations&&hasAnimatedBackground()) ||
+    const bool animate=forceAnimation || g_scrollTextActive || (g_uiAnimations&&hasAnimatedBackground()) ||
                        recentInput || g_navHeld!=0 || g_touch.active;
+    if(animate&&g_presentVsync)return;
     const bool toastVisible=!g_toastMessage.empty()&&!SDL_TICKS_PASSED(now,g_toastUntil);
     int waitMilliseconds=animate?16:250;
     if(toastVisible)waitMilliseconds=std::min(waitMilliseconds,
@@ -1721,9 +1835,16 @@ static void manageCollections(){
     const int count=1+(int)g_collections.size();
     const int rowH=56,start=std::max(topBarH()+34,110);
     const int visible=std::max(1,std::min(8,(SH-start-settingsFooterReserve())/rowH));
+    int colX,colW,labelX,valX;listCol(&colX,&colW,&labelX,&valX);
     SDL_Event event;navRepeat();
     while(pollUiEvent(event)){
-      pumpStick(event);if(event.type!=SDL_CONTROLLERBUTTONDOWN)continue;
+      pumpStick(event);int tx=0,ty=0;const TouchKind touch=touchFeed(event,&tx,&ty);
+      if(touchScrollList(touch,selection,top,count,visible))continue;
+      if(touch==TOUCH_TAP&&tx>=colX&&tx<colX+colW&&ty>=start&&ty<start+visible*rowH){
+        const int index=top+(ty-start)/rowH;
+        if(index<count){selection=index;SDL_Event press{};press.type=SDL_CONTROLLERBUTTONDOWN;press.cbutton.button=BTN_CONFIRM;SDL_PushEvent(&press);}
+      }
+      if(event.type!=SDL_CONTROLLERBUTTONDOWN)continue;
       if(event.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_UP)selection=(selection+count-1)%count;
       else if(event.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_DOWN)selection=(selection+1)%count;
       else if(event.cbutton.button==BTN_CONFIRM){
@@ -1739,18 +1860,20 @@ static void manageCollections(){
       top=std::max(0,std::min(top,std::max(0,count-visible)));
     }
     clearUiBackground();drawLocalizedHeader("Manage collections",nullptr);
-    int colX,colW,labelX,valX;listCol(&colX,&colW,&labelX,&valX);
     glassPanel(colX-12,start-10,colW+24,std::min(count,visible)*rowH+18);
     for(int row=0;row<visible&&top+row<count;row++){const int index=top+row,y=start+row*rowH;const bool current=index==selection;
-      if(current){fillRect(colX,y+2,colW,rowH-4,COL_FOCUS);fillRect(colX,y+2,5,rowH-4,COL_SEL);}
+      if(current){drawRowHighlight(colX,y+2,colW,rowH-4);}
       const std::string label=index==0?std::string(LauncherLocalization::Translate("Create collection")):g_collections[index-1].name;
-      drawText(g_font,labelX,y+(rowH-TTF_FontHeight(g_font))/2,label.c_str(),current?COL_VAL:COL_TXT);}
+      const int textY=y+(rowH-fontHeight(g_font))/2;
+      if(current)drawScrollTextL(g_font,labelX,textY,valX-labelX,label.c_str(),COL_VAL);
+      else drawText(g_font,labelX,textY,fittedText(g_font,label,valX-labelX).c_str(),COL_TXT);}
     if(count>visible){const int trackX=colX+colW+16,trackH=visible*rowH;
       fillRect(trackX,start,4,trackH,(SDL_Color){40,44,54,255});
       const int thumbH=std::max(12,trackH*visible/count),denominator=std::max(1,count-visible);
       fillRect(trackX,start+(trackH-thumbH)*top/denominator,4,thumbH,COL_SEL);}
     FootItem footer[]={{g_gA,"Open",FA_NONE},{g_gX,"Rename",FA_NONE},{g_gY,"Delete",FA_NONE},{g_gB,"Back",FA_NONE}};
-    drawFooterHints(footer,selection>0?4:2,SH-26);drawFadeIn();presentUi();waitForNextFrame();
+    FootItem createFooter[]={{g_gA,"Create collection",FA_NONE},{g_gB,"Back",FA_NONE}};
+    drawFooterHints(selection>0?footer:createFooter,selection>0?4:2,SH-26);drawFadeIn();presentUi();waitForNextFrame();
   }
 }
 
@@ -1770,12 +1893,12 @@ static void libraryFilterMenu(){
 
 static void editGameOrganization(Game &game){
   std::vector<std::string> labels;
-  labels.push_back(g_favoriteGames.find(game.key)!=g_favoriteGames.end()?"Remove from favorites":"Add to favorites");
+  labels.push_back(uiText(g_favoriteGames.find(game.key)!=g_favoriteGames.end()?"Remove from favorites":"Add to favorites"));
   for(const Collection &collection:g_collections)
     labels.push_back((collection.members.find(game.key)!=collection.members.end()?"[x] ":"[ ] ")+collection.name);
-  labels.push_back("Manage collections");
+  labels.push_back(uiText("Manage collections"));
   std::vector<const char*> choices;for(const std::string &label:labels)choices.push_back(label.c_str());
-  const int selected=dropdown("Collections",choices.data(),(int)choices.size(),0,true,false);
+  const int selected=dropdown("Collections",choices.data(),(int)choices.size(),-1,true,false);
   if(selected<0)return;
   if(selected==0){if(!g_favoriteGames.erase(game.key))g_favoriteGames.insert(game.key);}
   else if(selected==(int)labels.size()-1){manageCollections();}
@@ -1843,6 +1966,7 @@ struct LibraryScanState {
   std::thread worker;
   bool cacheDirty=false;
   bool firstBatch=true;
+  bool finalized=true;
   size_t unsortedPublished=0;
 };
 static LibraryScanState g_libraryScan;
@@ -1865,7 +1989,7 @@ static void startGameScan(){
   g_games.clear();g_visibleGames.clear();g_coverUseSerial=0;
   g_libraryScan.cancel.store(false,std::memory_order_release);
   g_libraryScan.complete.store(false,std::memory_order_release);
-  g_libraryScan.cacheDirty=false;g_libraryScan.firstBatch=true;g_libraryScan.unsortedPublished=0;
+  g_libraryScan.cacheDirty=false;g_libraryScan.firstBatch=true;g_libraryScan.finalized=false;g_libraryScan.unsortedPublished=0;
   Store globalSnapshot=g_global,titlesSnapshot=g_titles,recentSnapshot=g_recent;
   g_libraryScan.worker=std::thread([globalSnapshot,titlesSnapshot,recentSnapshot]() mutable {
     DIR *directory=opendir(APP_DIR);
@@ -1911,6 +2035,7 @@ static void startGameScan(){
 }
 
 static bool pumpGameScan(){
+  if(g_libraryScan.finalized)return true;
   std::deque<Game> batch;
   const size_t limit=2;
   {
@@ -1940,6 +2065,7 @@ static bool pumpGameScan(){
     if(g_libraryScan.worker.joinable())g_libraryScan.worker.join();
     if(g_libraryScan.cacheDirty){storeSave(g_global,LAUNCHER_INI);g_libraryScan.cacheDirty=false;}
     applySort();
+    g_libraryScan.finalized=true;
     return true;
   }
   return false;
@@ -2474,58 +2600,51 @@ static void showOptionHelp(const char *section,const Opt &option,const char *sco
 // --- shared UI polish: eased selection highlight + a brief screen fade-in -------
 static float g_hy = -1;        // animated highlight top (settings list); <0 = snap
 static Uint32 g_fxT = 0;       // screen-entry timestamp for the fade-in
-static void beginScreenFx(){ g_fxT = SDL_GetTicks(); g_hy = -1; }
+static void beginScreenFx(){ g_fxT = SDL_GetTicks(); g_hy = -1; g_textScroll.clear(); g_footN=0; }
 static void drawFadeIn(){
   if(!g_uiAnimations) return;
   const int D = 160; int el = (int)(SDL_GetTicks() - g_fxT);
   if (el < D) fillRect(0,0,SW,SH,(SDL_Color){0,0,0,(Uint8)(200*(D-el)/D)});
 }
-static bool highResolutionUi(){ return g_outputW>=1600; }
 // top-bar height, shared by the grid header (gridLayout y0) and the settings header
-static int topBarH(){
-  if(g_launcherPortrait) return highResolutionUi()?132:104;
-  return highResolutionUi()?112:80;
-}
-// header band: same height + logo as the grid's top bar, with a centred title
-static void drawScrollTextR(TTF_Font*f,int xRight,int y,int maxW,const char*s,SDL_Color c); // defined below
-static void drawScrollTextL(TTF_Font*f,int x,int y,int maxW,const char*s,SDL_Color c);      // defined below
-static void drawHeader(const char *title, const char *ctx){
-  int bandH = topBarH() - 4;                        // identical to renderGrid's band
-  fillRect(0,0,SW,bandH,COL_PANEL);
-  if(!hasAnimatedBackground()) fillRect(0,bandH,SW,2,COL_SEL);
+static int topBarH(){ return g_launcherPortrait?120:80; }
+static void drawPageHeader(const char *title,const char *eyebrow,const char *summary,const char *detail=nullptr){
+  const int height=topBarH(),margin=g_launcherPortrait?24:32,logoSize=48,left=margin+logoSize+20;
+  fillRect(0,0,SW,height,COL_PANEL);
+  fillRect(0,height-1,SW,1,(SDL_Color){255,255,255,18});
+  if(g_logo){SDL_Rect rect={margin,16,logoSize,logoSize};SDL_RenderCopy(g_ren,g_logo,nullptr,&rect);}
+  const int metadataWidth=g_launcherPortrait?0:std::min(SW/3,std::max(textW(g_font_sm,summary),textW(g_font_sm,detail)));
+  const int titleWidth=SW-left-margin-(metadataWidth?metadataWidth+32:0);
+  drawText(g_font_caption,left,9,fittedText(g_font_caption,eyebrow?eyebrow:"",titleWidth).c_str(),COL_DIM);
+  drawScrollTextL(g_font_big,left,31,titleWidth,title?title:"",COL_TXT);
   if(g_launcherPortrait){
-    const int logoH=std::min(bandH-18,highResolutionUi()?62:48);
-    if(g_logo){SDL_Rect ld={18,(bandH-logoH)/2,logoH,logoH};SDL_RenderCopy(g_ren,g_logo,nullptr,&ld);}
-    int titleY=ctx&&*ctx?(highResolutionUi()?18:12):(bandH-TTF_FontHeight(g_font_big))/2;
-    const std::string_view rawTitle=title?std::string_view(title):std::string_view{};
-    std::string shown=fittedText(g_font_big,std::string(rawTitle),std::max(80,SW-2*(logoH+34)));
-    drawTextC(g_font_big,SW/2,titleY,shown.c_str(),COL_VAL);
-    if(ctx&&*ctx){
-      std::string context=fittedText(g_font_sm,ctx,SW-52);
-      drawTextC(g_font_sm,SW/2,bandH-TTF_FontHeight(g_font_sm)-12,context.c_str(),COL_DIM);
-    }
-    return;
+    const int available=SW-margin*2;
+    const int rightWidth=std::min(available/2,textW(g_font_sm,detail));
+    drawText(g_font_sm,margin,height-34,fittedText(g_font_sm,summary?summary:"",available-(rightWidth?rightWidth+24:0)).c_str(),COL_DIM);
+    if(detail)drawTextR(g_font_sm,SW-margin,height-34,fittedText(g_font_sm,detail,rightWidth).c_str(),COL_DIM);
+  }else{
+    if(summary)drawTextR(g_font_sm,SW-margin,16,fittedText(g_font_sm,summary,metadataWidth).c_str(),COL_TXT);
+    if(detail)drawTextR(g_font_sm,SW-margin,44,fittedText(g_font_sm,detail,metadataWidth).c_str(),COL_DIM);
   }
-  int lh = bandH - 12;
-  if(g_logo){ SDL_Rect ld={26,(bandH-lh)/2,lh,lh}; SDL_RenderCopy(g_ren,g_logo,nullptr,&ld); }
-  const std::string_view rawTitle=title?std::string_view(title):std::string_view{};
-  std::string shown=fittedText(g_font_big,std::string(rawTitle),SW/2);
-  drawTextC(g_font_big,SW/2,(bandH-TTF_FontHeight(g_font_big))/2,shown.c_str(),COL_VAL);
-  if (ctx&&*ctx){
-    // Bound context text to the space right of the title; ping-pong scroll if still too long.
-    int titleRight = SW/2 + textW(g_font_big,rawTitle.data())/2;
-    int maxW = (SW-28) - titleRight - 30;
-    if(maxW > 40) drawScrollTextR(g_font_sm,SW-28,(bandH-TTF_FontHeight(g_font_sm))/2,maxW,ctx,COL_VAL);
-  }
+}
+static void drawHeader(const char *title,const char *ctx){
+  drawPageHeader(title,"Vita3K",ctx);
 }
 static void drawLocalizedHeader(const char *title,const char *ctx){
   const std::string_view shown=LauncherLocalization::Translate(title?title:"");
   drawHeader(shown.data(),ctx);
 }
+static void drawSectionHeading(const char *title,int x,int y,int width){
+  const std::string shown=fittedText(g_font_sm,LauncherLocalization::Translate(title).data(),width-24);
+  const int height=fontHeight(g_font_sm),textWidth=textW(g_font_sm,shown.c_str());
+  fillRect(x,y+4,3,height-8,COL_SEL);
+  drawText(g_font_sm,x+14,y,shown.c_str(),COL_HI);
+  fillRect(x+textWidth+30,y+height/2,width-textWidth-30,1,(SDL_Color){255,255,255,28});
+}
 // the centred settings column geometry (one source of truth for render + scroll)
-static int settingsRowH(){ return g_launcherPortrait?(highResolutionUi()?78:64):46; }
-static int settingsListY(){ return g_launcherPortrait?topBarH()+(highResolutionUi()?38:28):118; }
-static int settingsFooterReserve(){ return g_launcherPortrait?(highResolutionUi()?104:88):72; }
+static int settingsRowH(){ return g_launcherPortrait?64:44; }
+static int settingsListY(){ return topBarH()+(g_launcherPortrait?28:24); }
+static int settingsFooterReserve(){ return g_launcherPortrait?120:80; }
 static int portraitRowInset(){ return 1; }
 #define ROW_H (settingsRowH())
 #define LIST_Y0 (settingsListY())
@@ -2539,7 +2658,7 @@ static int listVis(){ int v=(SH-LIST_Y0-settingsFooterReserve())/ROW_H; return v
 static bool settingsRowNeedsStackedText(const char *label,const char *value,
                                         int labelX,int valX){
   if(!g_launcherPortrait)return false;
-  const int gap=highResolutionUi()?32:24;
+  const int gap=24;
   return textW(g_font,label)+gap+textW(g_font,value)>valX-labelX;
 }
 
@@ -2549,23 +2668,32 @@ static void drawSettingsRowText(const char *label,const char *value,
                                 SDL_Color valueColor,bool scrollValue=false,
                                 int rowHeight=0){
   const int actualRowHeight=rowHeight>0?rowHeight:settingsRowH();
+  if(!current)fillRect(labelX,slotY+actualRowHeight-1,valX-labelX,1,(SDL_Color){255,255,255,10});
   if(settingsRowNeedsStackedText(label,value,labelX,valX)){
     const int maxWidth=std::max(40,valX-labelX);
-    const int labelHeight=TTF_FontHeight(g_font);
-    const int valueHeight=TTF_FontHeight(g_font_sm);
-    const int gap=highResolutionUi()?5:3;
-    const int blockHeight=labelHeight+gap+valueHeight;
-    const int labelY=slotY+(actualRowHeight-blockHeight)/2;
+    const int labelHeight=fontHeight(g_font),valueHeight=fontHeight(g_font_sm),gap=3;
+    const int labelY=slotY+(actualRowHeight-labelHeight-gap-valueHeight)/2;
     if(current)drawScrollTextL(g_font,labelX,labelY,maxWidth,label,labelColor);
     else drawText(g_font,labelX,labelY,fittedText(g_font,label,maxWidth).c_str(),labelColor);
-    const int valueY=labelY+labelHeight+gap;
-    drawScrollTextR(g_font_sm,valX,valueY,maxWidth,value,valueColor);
+    drawScrollTextR(g_font_sm,valX,labelY+labelHeight+gap,maxWidth,value,valueColor);
     return;
   }
-  const int y=slotY+(actualRowHeight-TTF_FontHeight(g_font))/2;
-  drawText(g_font,labelX,y,fittedText(g_font,label,std::max(80,colW/2)).c_str(),labelColor);
-  if(scrollValue)drawScrollTextR(g_font,valX,y,colW/2-40,value,valueColor);
-  else drawTextR(g_font,valX,y,fittedText(g_font,value,std::max(80,colW/2-32)).c_str(),valueColor);
+  const bool submenu=value&&strcmp(value,">")==0;
+  const int valueWidth=submenu?16:std::min(textW(g_font_sm,value),colW/2-32);
+  const int labelWidth=std::max(40,valX-labelX-valueWidth-24);
+  const int y=slotY+(actualRowHeight-fontHeight(g_font))/2;
+  if(current)drawScrollTextL(g_font,labelX,y,labelWidth,label,labelColor);
+  else drawText(g_font,labelX,y,fittedText(g_font,label,labelWidth).c_str(),labelColor);
+  if(submenu){
+    const int cy=slotY+actualRowHeight/2;
+    SDL_SetRenderDrawColor(g_ren,valueColor.r,valueColor.g,valueColor.b,valueColor.a);
+    SDL_RenderDrawLine(g_ren,valX-10,cy-6,valX-4,cy);
+    SDL_RenderDrawLine(g_ren,valX-4,cy,valX-10,cy+6);
+  }else{
+    const int valueY=slotY+(actualRowHeight-fontHeight(g_font_sm))/2;
+    if(scrollValue)drawScrollTextR(g_font_sm,valX,valueY,colW/2-32,value,valueColor);
+    else drawTextR(g_font_sm,valX,valueY,fittedText(g_font_sm,value?value:"",colW/2-32).c_str(),valueColor);
+  }
 }
 
 static void renderSettings(int scr,int sel,int top,const char *ctx){
@@ -2574,13 +2702,12 @@ static void renderSettings(int scr,int sel,int top,const char *ctx){
   drawLocalizedHeader(S.title, ctx);
   int colX,colW,labelX,valX; listCol(&colX,&colW,&labelX,&valX);
   int vis=listVis();
-  glassPanel(colX-12,LIST_Y0-10,colW+24,vis*ROW_H+18);
+  glassPanel(colX-12,LIST_Y0-10,colW+24,std::min(vis,S.n-top)*ROW_H+18);
   // eased highlight bar with a left accent, tracking the selected row.
   const int rowInset=g_launcherPortrait?portraitRowInset():1;
   float ty = (float)(LIST_Y0 + (sel-top)*ROW_H + rowInset);
   g_hy = (!g_uiAnimations||g_hy<0) ? ty : g_hy + (ty-g_hy)*0.30f;
-  fillRect(colX,(int)g_hy,colW,ROW_H-rowInset*2,COL_FOCUS);
-  fillRect(colX,(int)g_hy,5,ROW_H-rowInset*2,COL_SEL);
+  drawRowHighlight(colX,(int)g_hy,colW,ROW_H-rowInset*2);
   for(int r=0;r<vis && top+r<S.n;r++){
     int i=top+r,slotY=LIST_Y0+r*ROW_H; bool cur=(i==sel); bool en=optEnabled(S.opts[i]);
     SDL_Color lc = !en?(SDL_Color){92,98,110,255}:(cur?COL_VAL:COL_TXT);
@@ -2605,50 +2732,47 @@ static void renderSettings(int scr,int sel,int top,const char *ctx){
 // A modal dropdown: pick one label from labels[0..n). Returns the chosen index, or `cur` on cancel.
 static int dropdown(const char *title, const char *const *labels, int n, int cur,
                     bool localizeTitle,bool localizeChoices) {
-  int sel = (cur < 0 || cur >= n) ? 0 : cur, top = 0;
-  const int rowH = 52;
-  int vis = (SH - 200) / rowH; if (vis < 1) vis = 1; if (vis > n) vis = n;
+  if(n<1)return cur;
+  int sel=std::clamp(cur,0,n-1),top=0;
+  const int rowH=settingsRowH()+8,vis=std::min(n,std::max(1,(SH-240)/rowH));
+  const int pw=std::min(900,SW-64),ph=140+vis*rowH,px=(SW-pw)/2,py=(SH-ph)/2,ly=py+80;
   beginScreenFx();
-  for (;;) {
-    if (!beginUiFrame()) return cur;
-    SDL_Event e;
-    navRepeat();
-    while (pollUiEvent(e)) {
-      pumpStick(e);
-      { int tx=0,ty=0; TouchKind tk=touchFeed(e,&tx,&ty);
-        if(touchScrollList(tk,sel,top,n,vis)) continue;
-        if(tk==TOUCH_TAP){ int pw=SW>760?760:SW-160,px=(SW-pw)/2,ly=(SH-(90+vis*rowH))/2+70;
-          for(int r=0;r<vis&&top+r<n;r++){ int y=ly+r*rowH; if(ty>=y&&ty<y+rowH&&tx>=px&&tx<px+pw){ return top+r; } }
-        } }
-      if (e.type != SDL_CONTROLLERBUTTONDOWN) continue;
-      switch (e.cbutton.button) {
-        case SDL_CONTROLLER_BUTTON_DPAD_UP:   sel=(sel+n-1)%n; break;
-        case SDL_CONTROLLER_BUTTON_DPAD_DOWN: sel=(sel+1)%n;   break;
-        case BTN_CONFIRM: return sel;
-        case BTN_CANCEL:  return cur;
+  for(;;){
+    if(!beginUiFrame())return cur;
+    SDL_Event event;navRepeat();
+    while(pollUiEvent(event)){
+      pumpStick(event);int tx=0,ty=0;const TouchKind touch=touchFeed(event,&tx,&ty);
+      if(touchScrollList(touch,sel,top,n,vis))continue;
+      if(touch==TOUCH_TAP&&tx>=px+8&&tx<px+pw-8){
+        for(int row=0;row<vis&&top+row<n;row++)if(ty>=ly+row*rowH&&ty<ly+(row+1)*rowH)return top+row;
       }
-      if(sel<top) top=sel;
-      if(sel>=top+vis) top=sel-vis+1;
-      if(top<0) top=0;
+      if(event.type!=SDL_CONTROLLERBUTTONDOWN)continue;
+      switch(event.cbutton.button){
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:sel=(sel+n-1)%n;break;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:sel=(sel+1)%n;break;
+        case BTN_CONFIRM:return sel;
+        case BTN_CANCEL:return cur;
+      }
+      if(sel<top)top=sel;
+      if(sel>=top+vis)top=sel-vis+1;
     }
-    clearUiBackground();
-    int pw = SW>760?760:SW-160, ph = 90 + vis*rowH, px=(SW-pw)/2, py=(SH-ph)/2;
-    glassPanel(px,py,pw,ph);
-    border(px,py,pw,ph,3,COL_SEL);
-    const std::string_view shownTitle=localizeTitle?LauncherLocalization::Translate(title):std::string_view(title);
-    drawTextC(g_font_big, SW/2, py+18, shownTitle.data(), COL_VAL);
-    int ly = py+70;
-    for(int r=0;r<vis && top+r<n;r++){
-      int i=top+r, y=ly+r*rowH; bool curr=(i==sel);
-      if(curr){ fillRect(px+8,y,pw-16,rowH-4,COL_FOCUS); fillRect(px+8,y,5,rowH-4,COL_SEL); }
-      const std::string_view shown=localizeChoices?LauncherLocalization::Translate(labels[i]):std::string_view(labels[i]);
-      drawText(g_font, px+34, y+(rowH-TTF_FontHeight(g_font))/2, shown.data(), curr?COL_VAL:COL_TXT);
+    clearUiBackground();glassPanel(px,py,pw,ph);
+    const std::string_view heading=localizeTitle?LauncherLocalization::Translate(title):std::string_view(title);
+    drawScrollTextL(g_font_big,px+28,py+22,pw-56,heading.data(),COL_TXT);
+    fillRect(px+28,py+66,pw-56,1,(SDL_Color){255,255,255,24});
+    for(int row=0;row<vis&&top+row<n;row++){
+      const int index=top+row,y=ly+row*rowH;const bool current=index==sel;
+      if(current)drawRowHighlight(px+8,y,pw-16,rowH-4);
+      const std::string_view label=localizeChoices?LauncherLocalization::Translate(labels[index]):std::string_view(labels[index]);
+      const int textY=y+(rowH-fontHeight(g_font))/2;
+      if(current)drawScrollTextL(g_font,px+32,textY,pw-76,label.data(),COL_VAL);
+      else drawText(g_font,px+32,textY,fittedText(g_font,std::string(label),pw-76).c_str(),COL_TXT);
     }
-    if(n>vis){ int trH=vis*rowH,trX=px+pw-12,trY=ly; fillRect(trX,trY,4,trH,(SDL_Color){40,44,54,255});
-      int thH=trH*vis/n,dn=(n-vis>0?n-vis:1); fillRect(trX,trY+(trH-thH)*top/dn,4,thH,COL_SEL); }
-    drawFadeIn();
-    presentUi();
-    waitForNextFrame();
+    if(n>vis){const int height=vis*rowH,thumb=std::max(12,height*vis/n);
+      fillRect(px+pw-18,ly,3,height,COL_CARD);fillRect(px+pw-18,ly+(height-thumb)*top/(n-vis),3,thumb,COL_SEL);}
+    FootItem footer[]={{g_gA,"Select",FA_NONE},{g_gB,"Back",FA_NONE}};
+    drawFooterHints(footer,2,py+ph-28);
+    drawFadeIn();presentUi();waitForNextFrame();
   }
 }
 // ---------------------------------------------------------------------------
@@ -2768,11 +2892,11 @@ static void moduleListPicker(const Opt &option){
     const int ly=py+70;
     for(int r=0;r<vis&&top+r<count;r++){
       const int i=top+r,y=ly+r*rowH; const bool cur=(i==sel);
-      if(cur){ fillRect(px+8,y,pw-16,rowH-4,COL_FOCUS); fillRect(px+8,y,5,rowH-4,COL_SEL); }
+      if(cur){ drawRowHighlight(px+8,y,pw-16,rowH-4); }
       const int box=20,bx=px+30,by=y+(rowH-4-box)/2;
       border(bx,by,box,box,2,cur?COL_SEL:COL_DIM);
       if(enabled[i]) fillRect(bx+5,by+5,box-10,box-10,COL_VAL);
-      drawText(g_font,px+70,y+(rowH-TTF_FontHeight(g_font))/2,modules[i].c_str(),cur?COL_VAL:COL_TXT);
+      drawText(g_font,px+70,y+(rowH-fontHeight(g_font))/2,modules[i].c_str(),cur?COL_VAL:COL_TXT);
     }
     if(count>vis){
       const int trH=vis*rowH,trX=px+pw-12,trY=ly;
@@ -3109,9 +3233,9 @@ static bool chooseImportLocation(Vita3KLauncher::Storage::Location &selected){
     if(visible>0)glassPanel(colX-12,listY-10,colW+24,visible*rowH+18);
     for(int row=0;row<visible&&top+row<(int)locations.size();++row){
       int index=top+row,y=listY+row*rowH,current=index==sel;
-      if(current){fillRect(colX,y,colW,rowH-2,COL_FOCUS);fillRect(colX,y,5,rowH-2,COL_SEL);}
+      if(current){drawRowHighlight(colX,y,colW,rowH-2);}
       std::string label=fittedText(g_font,locations[index].label,colW-64);
-      drawText(g_font,labelX,y+(rowH-TTF_FontHeight(g_font))/2,label.c_str(),current?COL_VAL:COL_TXT);
+      drawText(g_font,labelX,y+(rowH-fontHeight(g_font))/2,label.c_str(),current?COL_VAL:COL_TXT);
     }
     if(locations.empty())drawTextC(g_font,SW/2,SH/2,"No storage locations are available",COL_DIM);
     if(!warning.empty()){
@@ -3432,12 +3556,12 @@ static bool browseStorageFile(ImportKind kind,ImportSelection &selection){
   // layout (fixed for the session; mirrors the settings list column + row height)
   const int bandH  = topBarH()-4;
   const int pathY  = bandH + 10;
-  const int listY0 = pathY + TTF_FontHeight(g_font_sm) + 18;
+  const int listY0 = pathY + fontHeight(g_font_sm) + 18;
   const int rowH   = ROW_H;
-  const int hintY  = SH - 40;
-  int vis = (hintY - 14 - listY0)/rowH; if(vis<1) vis=1;
+  const int hintY  = SH - 26;
+  int vis = (SH - settingsFooterReserve() - listY0)/rowH; if(vis<1) vis=1;
   int colX,colW,labelX,valX; listCol(&colX,&colW,&labelX,&valX);
-  const int fh = TTF_FontHeight(g_font), fhs = TTF_FontHeight(g_font_sm);
+  const int fh = fontHeight(g_font), fhs = fontHeight(g_font_sm);
 
   auto enterDir=[&](const std::string &next)->bool{
     std::vector<BrowseEntry> updated;std::string failure;
@@ -3468,6 +3592,11 @@ static bool browseStorageFile(ImportKind kind,ImportSelection &selection){
         if(touchScrollList(tk,sel,top,(int)entries.size(),vis)) continue;
         if(tk==TOUCH_TAP){
           if(ty<bandH){ return false; }
+          const int action=footTapAct(tx,ty);
+          if(action==FA_LAUNCH||action==FA_QUIT){
+            SDL_Event press{};press.type=SDL_CONTROLLERBUTTONDOWN;press.cbutton.button=action==FA_LAUNCH?BTN_CONFIRM:BTN_CANCEL;
+            SDL_PushEvent(&press);continue;
+          }
           if(ty>=SH-40){ if(browseIsRoot(dir,root)) return false; enterDir(browseParent(dir,root)); continue; }
           for(int r=0;r<vis && top+r<(int)entries.size();r++){ int y=listY0+r*rowH;
             if(ty>=y && ty<y+rowH){ sel=top+r;
@@ -3516,8 +3645,7 @@ static bool browseStorageFile(ImportKind kind,ImportSelection &selection){
     if(n){                                        // eased highlight bar + left accent (matches settings)
       float ty=(float)(listY0+(sel-top)*rowH+1);
       g_hy=(!g_uiAnimations||g_hy<0)?ty:g_hy+(ty-g_hy)*0.30f;
-      fillRect(colX,(int)g_hy,colW,rowH-2,COL_FOCUS);
-      fillRect(colX,(int)g_hy,5,rowH-2,COL_SEL);
+      drawRowHighlight(colX,(int)g_hy,colW,rowH-2);
     }
     for(int r=0;r<vis && top+r<n;r++){
       int i=top+r, y=listY0+r*rowH+(rowH-fh)/2, ys=listY0+r*rowH+(rowH-fhs)/2; bool cur=(i==sel);
@@ -3544,7 +3672,8 @@ static bool browseStorageFile(ImportKind kind,ImportSelection &selection){
       int thH=trH*vis/n, denom=(n-vis>0?n-vis:1);
       fillRect(trX,trY+(trH-thH)*top/denom,4,thH,COL_SEL);
     }
-    drawTextC(g_font_sm, SW/2, hintY, "A: Open / Select      B: Up / Back", COL_DIM);
+    FootItem footer[]={{g_gA,"Open / Select",FA_LAUNCH},{g_gB,"Up / Back",FA_QUIT}};
+    drawFooterHints(footer,2,hintY);
     drawFadeIn();
     presentUi();
     waitForNextFrame();
@@ -4230,8 +4359,7 @@ static bool editSmbShare(Vita3KLauncher::Storage::SmbShare &share,bool creating)
     const int rowHeight=settingsRowH(),start=settingsListY();
     glassPanel(columnX-12,start-10,columnWidth+24,rowCount*rowHeight+18);
     const int inset=g_launcherPortrait?portraitRowInset():2;
-    fillRect(columnX,start+sel*rowHeight+inset,columnWidth,rowHeight-inset*2,COL_FOCUS);
-    fillRect(columnX,start+sel*rowHeight+inset,5,rowHeight-inset*2,COL_SEL);
+    drawRowHighlight(columnX,start+sel*rowHeight+inset,columnWidth,rowHeight-inset*2);
     const char *labels[rowCount]={"Display name","Server","Shared folder","Start folder","Username","Password","Domain","Connect at startup","Save share"};
     std::string masked=edited.password.empty()?"Not set":std::string(std::min<size_t>(edited.password.size(),12),'*');
     const char *values[rowCount]={edited.name.c_str(),edited.server.c_str(),edited.share.c_str(),edited.path.empty()?"Root":edited.path.c_str(),
@@ -4317,8 +4445,8 @@ static void networkSharesScreen(){
       drawLocalizedHeader("SMB network shares",summary.c_str());
       for(int row=0;row<visible&&top+row<count;row++){
         const int index=top+row,slot=listY+row*rowHeight;const bool current=index==sel;
-        if(current){fillRect(54,slot+2,SW-108,rowHeight-4,COL_FOCUS);fillRect(54,slot+2,5,rowHeight-4,COL_SEL);}
-        if(index==0)drawText(g_font,80,slot+(rowHeight-TTF_FontHeight(g_font))/2,"[ Add SMB share ]",current?COL_VAL:COL_HI);
+        if(current){drawRowHighlight(54,slot+2,SW-108,rowHeight-4);}
+        if(index==0)drawText(g_font,80,slot+(rowHeight-fontHeight(g_font))/2,"[ Add SMB share ]",current?COL_VAL:COL_HI);
         else {
           const auto &share=shares[index-1];const SmbConnectionState state=GetSmbConnectionState(share.id);
           const bool mounted=state==SmbConnectionState::Connected;
@@ -4597,12 +4725,13 @@ static bool runFileBrowser(std::string *selectedImage=nullptr,const std::string 
       glassPanel(columnX-12,listY-10,columnWidth+24,std::min(count,visible)*rowHeight+18);
       for(int row=0;row<visible&&top+row<count;row++){
         const int index=top+row,slot=listY+row*rowHeight;const bool selected=index==sel;const BrowserItem &item=items[index];
-        if(selected){fillRect(columnX,slot+2,columnWidth,rowHeight-4,COL_FOCUS);fillRect(columnX,slot+2,5,rowHeight-4,COL_SEL);}
+        if(selected){drawRowHighlight(columnX,slot+2,columnWidth,rowHeight-4);}
         const SDL_Color base=(item.kind==BrowserItemKind::Paste||item.kind==BrowserItemKind::Favorite)?COL_HI:(item.directory?COL_TXT:(SDL_Color){120,220,120,255});
         const int rightSpace=item.kind==BrowserItemKind::File?150:20;
-        drawText(g_font,labelX,slot+(rowHeight-TTF_FontHeight(g_font))/2,
-          ellipsizedText(g_font,item.label,valueX-labelX-rightSpace).c_str(),selected?COL_VAL:base);
-        if(item.kind==BrowserItemKind::File){const std::string size=browseFmtSize(item.size);drawTextR(g_font_sm,valueX,slot+(rowHeight-TTF_FontHeight(g_font_sm))/2,size.c_str(),selected?COL_VAL:COL_DIM);}
+        const int nameY=slot+(rowHeight-fontHeight(g_font))/2,nameWidth=valueX-labelX-rightSpace;
+        if(selected)drawScrollTextL(g_font,labelX,nameY,nameWidth,item.label.c_str(),COL_VAL);
+        else drawText(g_font,labelX,nameY,ellipsizedText(g_font,item.label,nameWidth).c_str(),base);
+        if(item.kind==BrowserItemKind::File){const std::string size=browseFmtSize(item.size);drawTextR(g_font_sm,valueX,slot+(rowHeight-fontHeight(g_font_sm))/2,size.c_str(),selected?COL_VAL:COL_DIM);}
       }
       if(imageMode){
         FootItem footer[]={{g_gA,"Open / Select",FA_NONE},{g_gB,"Back",FA_NONE}};
@@ -4721,8 +4850,7 @@ static void launcherSettingsScreen() {
     if(sel<listCount){
       float target=(float)(listY+(sel-top)*rowH+rowInset);
       g_hy=(!g_uiAnimations||g_hy<0)?target:g_hy+(target-g_hy)*0.30f;
-      fillRect(colX,(int)g_hy,colW,rowH-rowInset*2,COL_FOCUS);
-      fillRect(colX,(int)g_hy,5,rowH-rowInset*2,COL_SEL);
+      drawRowHighlight(colX,(int)g_hy,colW,rowH-rowInset*2);
     }
     for(int row=0;row<visible&&top+row<listCount;row++){
       int index=top+row,slotY=listY+row*rowH;bool current=index==sel;
@@ -4737,7 +4865,7 @@ static void launcherSettingsScreen() {
     const bool updateSelected=sel==updateRow;
     fillRect(buttonX,buttonY,buttonWidth,buttonHeight,updateSelected?COL_FOCUS:(SDL_Color){35,40,50,225});
     border(buttonX,buttonY,buttonWidth,buttonHeight,2,updateSelected?COL_SEL:COL_DIM);
-    drawTextC(g_font,SW/2,buttonY+(buttonHeight-TTF_FontHeight(g_font))/2,
+    drawTextC(g_font,SW/2,buttonY+(buttonHeight-fontHeight(g_font))/2,
               "Check for Updates",updateSelected?COL_VAL:COL_TXT);
     const std::string status=launcherUpdateStatusText();
     drawTextC(g_font_sm,SW/2,buttonY+buttonHeight+8,status.c_str(),updateSelected?COL_VAL:COL_DIM);
@@ -4803,8 +4931,7 @@ static void homebrewModulesScreen(){
     const int inset=g_launcherPortrait?portraitRowInset():2;
     float target=(float)(startY+sel*rowHeight+inset);
     g_hy=(!g_uiAnimations||g_hy<0)?target:g_hy+(target-g_hy)*0.30f;
-    fillRect(columnX,(int)g_hy,columnWidth,rowHeight-inset*2,COL_FOCUS);
-    fillRect(columnX,(int)g_hy,5,rowHeight-inset*2,COL_SEL);
+    drawRowHighlight(columnX,(int)g_hy,columnWidth,rowHeight-inset*2);
 
     for(int row=0;row<rowCount;row++){
       const ModuleEntry &entry=modules_entry(row);
@@ -4876,8 +5003,7 @@ static void libraryStorageScreen(){
     const int inset=g_launcherPortrait?portraitRowInset():2;
     float target=(float)(startY+sel*rowHeight+inset);
     g_hy=(!g_uiAnimations||g_hy<0)?target:g_hy+(target-g_hy)*0.30f;
-    fillRect(columnX,(int)g_hy,columnWidth,rowHeight-inset*2,COL_FOCUS);
-    fillRect(columnX,(int)g_hy,5,rowHeight-inset*2,COL_SEL);
+    drawRowHighlight(columnX,(int)g_hy,columnWidth,rowHeight-inset*2);
     const auto shares=loadSmbSharesFromStore();size_t mounted=0;
     for(const auto &share:shares)if(Vita3KLauncher::Storage::IsSmbMounted(share.id))mounted++;
     const std::string smbValue=std::to_string(mounted)+" / "+std::to_string(shares.size())+" connected";
@@ -5140,8 +5266,7 @@ static void usersScreen(){
       const int inset=g_launcherPortrait?portraitRowInset():2;
       const float target=(float)(startY+choice*rowHeight+inset);
       g_hy=(!g_uiAnimations||g_hy<0)?target:g_hy+(target-g_hy)*0.30f;
-      fillRect(columnX,(int)g_hy,columnWidth,rowHeight-inset*2,COL_FOCUS);
-      fillRect(columnX,(int)g_hy,5,rowHeight-inset*2,COL_SEL);
+      drawRowHighlight(columnX,(int)g_hy,columnWidth,rowHeight-inset*2);
       for(int row=0;row<3;row++){
         const std::string_view label=LauncherLocalization::Translate(titles[row]);
         const char *value=row==0?(isActive?"Selected":"Not selected"):"";
@@ -5198,8 +5323,7 @@ static void usersScreen(){
     const int inset=g_launcherPortrait?portraitRowInset():2;
     const float target=(float)(startY+sel*rowHeight+inset);
     g_hy=(!g_uiAnimations||g_hy<0)?target:g_hy+(target-g_hy)*0.30f;
-    fillRect(columnX,(int)g_hy,columnWidth,rowHeight-inset*2,COL_FOCUS);
-    fillRect(columnX,(int)g_hy,5,rowHeight-inset*2,COL_SEL);
+    drawRowHighlight(columnX,(int)g_hy,columnWidth,rowHeight-inset*2);
     for(int row=0;row<count;row++){
       const bool current=row==sel;
       if(row==(int)users.size()){
@@ -5229,13 +5353,15 @@ static void runSettingsRoot(SDL_GameController *pad,const char *ctx){
   constexpr int launcherRows=4;
   const int emulatorCount=(int)(sizeof(emulatorOrder)/sizeof(*emulatorOrder));
   const int count=global?launcherRows+emulatorCount:1+emulatorCount;
-  const int rowHeight=settingsRowH(),startY=settingsListY();
-  const int sectionGap=global?(g_launcherPortrait?42:34):0;
+  int rowHeight=0,startY=0,sectionGap=0;
+  const auto layout=[&](){rowHeight=settingsRowH();startY=settingsListY()+40;sectionGap=global?56:0;};
+  layout();
   int sel=0;
   auto rowY=[&](int index){return startY+index*rowHeight+(global&&index>=launcherRows?sectionGap:0);};
   beginScreenFx();
   for(;;){
     if(!beginUiFrame())return;
+    layout();
     SDL_Event event;navRepeat();
     while(pollUiEvent(event)){
       pumpStick(event);int tx=0,ty=0;TouchKind touch=touchFeed(event,&tx,&ty);
@@ -5273,20 +5399,23 @@ static void runSettingsRoot(SDL_GameController *pad,const char *ctx){
       } else if(event.cbutton.button==BTN_CANCEL)return;
     }
 
-    clearUiBackground();drawLocalizedHeader(global?"Settings":"Per-game settings",global?nullptr:ctx);
+    layout();
+    clearUiBackground();drawLocalizedHeader(global?"Settings":"Per-game settings",global?uiText("Global settings").c_str():ctx);
     int columnX,columnWidth,labelX,valueX;listCol(&columnX,&columnWidth,&labelX,&valueX);
     if(global){
-      glassPanel(columnX-12,startY-10,columnWidth+24,launcherRows*rowHeight+18);
+      drawSectionHeading("General",columnX,startY-44,columnWidth);
+      glassPanel(columnX-12,startY-8,columnWidth+24,launcherRows*rowHeight+16);
       const int emulatorY=rowY(launcherRows);
-      glassPanel(columnX-12,emulatorY-10,columnWidth+24,emulatorCount*rowHeight+18);
+      drawSectionHeading("Emulator",columnX,emulatorY-44,columnWidth);
+      glassPanel(columnX-12,emulatorY-8,columnWidth+24,emulatorCount*rowHeight+16);
     }else{
-      glassPanel(columnX-12,startY-10,columnWidth+24,count*rowHeight+18);
+      drawSectionHeading("Emulator",columnX,startY-44,columnWidth);
+      glassPanel(columnX-12,startY-8,columnWidth+24,count*rowHeight+16);
     }
     const int inset=g_launcherPortrait?portraitRowInset():2;
     float target=(float)(rowY(sel)+inset);
     g_hy=(!g_uiAnimations||g_hy<0)?target:g_hy+(target-g_hy)*0.30f;
-    fillRect(columnX,(int)g_hy,columnWidth,rowHeight-inset*2,COL_FOCUS);
-    fillRect(columnX,(int)g_hy,5,rowHeight-inset*2,COL_SEL);
+    drawRowHighlight(columnX,(int)g_hy,columnWidth,rowHeight-inset*2);
     for(int index=0;index<count;index++){
       const int slot=rowY(index);const bool current=index==sel;
       if(global&&index==0){
@@ -5352,7 +5481,7 @@ static void drawToastOverlay(){
   const int pw=std::min(820,SW-32),ph=120,px=(SW-pw)/2,py=(SH-ph)/2;
   glassPanel(px,py,pw,ph);border(px,py,pw,ph,2,COL_HI);
   const std::string shown=fittedText(g_font,g_toastMessage,pw-40);
-  drawTextC(g_font,SW/2,py+(ph-TTF_FontHeight(g_font))/2,shown.c_str(),COL_TXT);
+  drawTextC(g_font,SW/2,py+(ph-fontHeight(g_font))/2,shown.c_str(),COL_TXT);
 }
 
 static void toast(const char *msg) {
@@ -5371,9 +5500,9 @@ static void modalMessageRaw(const char *title, const std::vector<std::string> &l
   const int pw=std::min(SW-32,g_launcherPortrait?SW-40:SW*3/4);
   TTF_Font *bodyFont=g_font;
   std::vector<std::string> wrapped=wrapDialogLines(bodyFont,lines,pw-56);
-  int lineStep=TTF_FontHeight(bodyFont)+12;
+  int lineStep=fontHeight(bodyFont)+12;
   if(150+(int)wrapped.size()*lineStep>SH-32){
-    bodyFont=g_font_sm;wrapped=wrapDialogLines(bodyFont,lines,pw-56);lineStep=TTF_FontHeight(bodyFont)+10;
+    bodyFont=g_font_sm;wrapped=wrapDialogLines(bodyFont,lines,pw-56);lineStep=fontHeight(bodyFont)+10;
   }
   for (;;) {
     if (!beginUiFrame()) return;
@@ -5388,14 +5517,15 @@ static void modalMessageRaw(const char *title, const std::vector<std::string> &l
     clearUiBackground();
     int ph=std::min(SH-32,150+(int)wrapped.size()*lineStep),px=(SW-pw)/2,py=(SH-ph)/2;
     glassPanel(px,py,pw,ph);
-    border(px,py,pw,ph,3,COL_SEL);
     std::string shownTitle=fittedText(g_font_big,title?title:"",pw-48);
-    drawTextC(g_font_big,SW/2,py+24,shownTitle.c_str(),COL_SEL);
+    drawText(g_font_big,px+28,py+22,shownTitle.c_str(),COL_TXT);
+    fillRect(px+28,py+72,pw-56,1,(SDL_Color){255,255,255,24});
     int y=py+88;
     SDL_Rect clip={px+18,y-4,pw-36,std::max(1,py+ph-58-y)};SDL_RenderSetClipRect(g_ren,&clip);
     for(const std::string &line:wrapped){drawTextC(bodyFont,SW/2,y,line.c_str(),COL_TXT);y+=lineStep;}
     SDL_RenderSetClipRect(g_ren,nullptr);
-    drawTextC(g_font_sm, SW/2, py+ph-42, LauncherLocalization::Translate("Press A to continue").data(), COL_DIM);
+    FootItem footer[]={{g_gA,"Continue",FA_NONE}};
+    drawFooterHints(footer,1,py+ph-30);
     presentUi(); waitForNextFrame();
   }
 }
@@ -5419,8 +5549,8 @@ static bool confirmBoxRaw(const char *title, const std::vector<std::string> &lin
   int pw=std::min(SW-32,g_launcherPortrait?SW-40:SW*3/4);
   TTF_Font *bodyFont=g_font;
   std::vector<std::string> wrapped=wrapDialogLines(bodyFont,lines,pw-56);
-  int lineStep=TTF_FontHeight(bodyFont)+12;
-  if(200+(int)wrapped.size()*lineStep>SH-32){bodyFont=g_font_sm;wrapped=wrapDialogLines(bodyFont,lines,pw-56);lineStep=TTF_FontHeight(bodyFont)+10;}
+  int lineStep=fontHeight(bodyFont)+12;
+  if(200+(int)wrapped.size()*lineStep>SH-32){bodyFont=g_font_sm;wrapped=wrapDialogLines(bodyFont,lines,pw-56);lineStep=fontHeight(bodyFont)+10;}
   int ph=std::min(SH-32,190+(int)wrapped.size()*lineStep),px=(SW-pw)/2,py=(SH-ph)/2;
   int bw=std::min(210,(pw-54)/2),bh=56,bby=py+ph-bh-22,yesx=SW/2-bw-12,nox=SW/2+12;
   for(;;){
@@ -5441,19 +5571,23 @@ static bool confirmBoxRaw(const char *title, const std::vector<std::string> &lin
     }
     clearUiBackground();
     glassPanel(px,py,pw,ph);
-    border(px,py,pw,ph,3,(SDL_Color){210,70,70,255});
     std::string shownTitle=fittedText(g_font_big,title?title:"",pw-48);
-    drawTextC(g_font_big,SW/2,py+24,shownTitle.c_str(),(SDL_Color){235,120,120,255});
+    drawText(g_font_big,px+28,py+22,shownTitle.c_str(),(SDL_Color){238,135,135,255});
+    fillRect(px+28,py+72,pw-56,1,(SDL_Color){255,255,255,24});
     int y=py+88;SDL_Rect clip={px+18,y-4,pw-36,std::max(1,bby-y-10)};SDL_RenderSetClipRect(g_ren,&clip);
     for(const std::string &line:wrapped){drawTextC(bodyFont,SW/2,y,line.c_str(),COL_TXT);y+=lineStep;}
     SDL_RenderSetClipRect(g_ren,nullptr);
-    int fh=TTF_FontHeight(g_font);
-    fillRect(yesx,bby,bw,bh,(SDL_Color){150,50,50,255}); border(yesx,bby,bw,bh,2,(SDL_Color){215,95,95,255});
-    const std::string yes=std::string(LauncherLocalization::Translate("Yes"))+"  (A)";
-    drawTextC(g_font,yesx+bw/2,bby+(bh-fh)/2,yes.c_str(),COL_TXT);
-    fillRect(nox,bby,bw,bh,(SDL_Color){48,54,64,255}); border(nox,bby,bw,bh,2,COL_DIM);
-    const std::string no=std::string(LauncherLocalization::Translate("No"))+"  (B)";
-    drawTextC(g_font,nox+bw/2,bby+(bh-fh)/2,no.c_str(),COL_TXT);
+    const auto drawChoice=[&](int x,SDL_Texture *glyph,const char *label){
+      const std::string_view shown=LauncherLocalization::Translate(label);
+      int gw=0,gh=0;if(glyph)SDL_QueryTexture(glyph,nullptr,nullptr,&gw,&gh);gw/=GLYPH_SS;gh/=GLYPH_SS;
+      const int textWidth=textW(g_font,shown.data()),left=x+(bw-gw-8-textWidth)/2;
+      if(glyph){SDL_Rect icon={left,bby+(bh-gh)/2,gw,gh};SDL_RenderCopy(g_ren,glyph,nullptr,&icon);}
+      drawText(g_font,left+gw+8,bby+(bh-fontHeight(g_font))/2,shown.data(),COL_TXT);
+    };
+    roundedRect(yesx,bby,bw,bh,5,(SDL_Color){115,44,51,255});
+    drawChoice(yesx,g_gA,"Yes");
+    roundedRect(nox,bby,bw,bh,5,COL_FOCUS);
+    drawChoice(nox,g_gB,"No");
     presentUi(); waitForNextFrame();
   }
 }
@@ -5575,17 +5709,17 @@ static void runUpdateScreen(){
         else snprintf(progress,sizeof(progress),"%.1f MiB",snapshot.downloaded/1048576.0);
         detail=progress;break;
       }
-      case LauncherUpdateState::ReadyToInstall:status="Download verified";detail="Press A to install the launcher update and exit.";break;
+      case LauncherUpdateState::ReadyToInstall:status="Download verified";break;
       case LauncherUpdateState::Installing:status="Installing update...";break;
       case LauncherUpdateState::Installed:status="Update installed";break;
-      case LauncherUpdateState::Cancelled:status="Update cancelled";detail="Press A to check again.";break;
+      case LauncherUpdateState::Cancelled:status="Update cancelled";break;
       case LauncherUpdateState::Error:status="Update failed";detail=snapshot.error;break;
     }
     std::string shownStatus=fittedText(g_font_big,status,panelW-64);
     drawTextC(g_font_big,SW/2,panelY+28,shownStatus.c_str(),COL_VAL);
     if(!detail.empty()){
       auto details=wrapTextLines(g_font_sm,detail,panelW-64);int y=panelY+92;
-      for(const std::string &line:details){drawTextC(g_font_sm,SW/2,y,line.c_str(),snapshot.state==LauncherUpdateState::Error?(SDL_Color){245,130,120,255}:COL_DIM);y+=TTF_FontHeight(g_font_sm)+7;}
+      for(const std::string &line:details){drawTextC(g_font_sm,SW/2,y,line.c_str(),snapshot.state==LauncherUpdateState::Error?(SDL_Color){245,130,120,255}:COL_DIM);y+=fontHeight(g_font_sm)+7;}
     }
     if(snapshot.state==LauncherUpdateState::Downloading&&snapshot.total){
       int barX=panelX+32,barY=panelY+150,barW=panelW-64;
@@ -5595,13 +5729,13 @@ static void runUpdateScreen(){
     if(!snapshot.release.notes.empty()){
       int notesY=panelY+(snapshot.state==LauncherUpdateState::Downloading?190:150);
       drawText(g_font,panelX+32,notesY,"Release notes",COL_HI);
-      notesY+=TTF_FontHeight(g_font)+12;
+      notesY+=fontHeight(g_font)+12;
       auto notes=wrapReleaseNotes(snapshot.release.notes,panelW-64);
       SDL_Rect clip={panelX+28,notesY-4,panelW-56,std::max(1,panelY+panelH-notesY-18)};
       SDL_RenderSetClipRect(g_ren,&clip);
-      int maxLines=std::max(1,clip.h/(TTF_FontHeight(g_font_sm)+7));
+      int maxLines=std::max(1,clip.h/(fontHeight(g_font_sm)+7));
       for(int i=0;i<(int)notes.size()&&i<maxLines;i++){
-        drawText(g_font_sm,panelX+32,notesY+i*(TTF_FontHeight(g_font_sm)+7),notes[i].c_str(),COL_TXT);
+        drawText(g_font_sm,panelX+32,notesY+i*(fontHeight(g_font_sm)+7),notes[i].c_str(),COL_TXT);
       }
       SDL_RenderSetClipRect(g_ren,nullptr);
     }
@@ -5628,7 +5762,7 @@ static void drawUpdateNotification(){
   fillRect(x,y,width,height,COL_CARD);border(x,y,width,height,2,COL_SEL);
   std::string title=fittedText(g_font,"Vita3K-nx "+g_updateNoticeTag+" is available",width-36);
   drawTextC(g_font,SW/2,y+14,title.c_str(),COL_VAL);
-  drawTextC(g_font_sm,SW/2,y+height-TTF_FontHeight(g_font_sm)-13,"Settings > Launcher > Check for Updates",COL_DIM);
+  drawTextC(g_font_sm,SW/2,y+height-fontHeight(g_font_sm)-13,"Settings > Launcher > Check for Updates",COL_DIM);
 }
 
 static const char *gridDbErrorText(int result) {
@@ -5651,7 +5785,7 @@ static bool runCancellableNetworkTask(const char *title,const std::string &detai
          (touch==TOUCH_TAP&&y>=SH-80))cancel.store(true,std::memory_order_release);}
     clearUiBackground();drawLocalizedHeader(title,nullptr);
     const auto lines=wrapTextLines(g_font,detail,SW-160);int y=SH/2-(int)lines.size()*24;
-    for(const std::string &line:lines){drawTextC(g_font,SW/2,y,line.c_str(),COL_TXT);y+=TTF_FontHeight(g_font)+8;}
+    for(const std::string &line:lines){drawTextC(g_font,SW/2,y,line.c_str(),COL_TXT);y+=fontHeight(g_font)+8;}
     FootItem footer[]={{g_gB,"Cancel",FA_NONE}};drawFooterHints(footer,1,SH-26);
     drawFadeIn();presentUi();waitForNextFrame();
   }
@@ -5659,20 +5793,39 @@ static bool runCancellableNetworkTask(const char *title,const std::string &detai
   return !cancel.load(std::memory_order_acquire);
 }
 
+struct GameDetailLayout { SDL_Rect preview,content; };
+static GameDetailLayout gameDetailLayout(){
+  const int top=topBarH()+24,bottom=SH-settingsFooterReserve()-12;
+  if(g_launcherPortrait){
+    const int height=270,width=height*2/3;
+    return {{(SW-width)/2,top,width,height},{32,top+height+32,SW-64,bottom-top-height-32}};
+  }
+  const int width=260,height=width*3/2;
+  return {{56,top+(bottom-top-height)/2,width,height},{360,top,SW-416,bottom-top}};
+}
+static void drawArtworkPreview(SDL_Texture *texture,const SDL_Rect &rect,bool selected=false){
+  glassPanel(rect.x-10,rect.y-10,rect.w+20,rect.h+20);
+  fillRect(rect.x,rect.y,rect.w,rect.h,COL_CARD);
+  if(texture){
+    SDL_SetTextureAlphaMod(texture,255);SDL_SetTextureColorMod(texture,255,255,255);
+    SDL_RenderCopy(g_ren,texture,nullptr,&rect);
+  }else{
+    drawTextC(g_font_sm,rect.x+rect.w/2,rect.y+(rect.h-fontHeight(g_font_sm))/2,
+      LauncherLocalization::Translate("NO COVER").data(),COL_DIM);
+  }
+  if(selected)border(rect.x-2,rect.y-2,rect.w+4,rect.h+4,2,COL_SEL);
+}
+static void drawGamePreview(Game &game,const SDL_Rect &rect){
+  g_cover_budget=1;ensureCover(game);
+  drawArtworkPreview(game.cover,rect);
+}
+
 static int chooseCoverArtwork(const std::vector<GridDbArtwork> &artworks,const char *gameName) {
   if(artworks.empty()) return -1;
-  const int rowHeight=52;
-  const int listX=g_launcherPortrait?48:56;
-  const int listWidth=g_launcherPortrait?SW-96:SW/2-78;
-  const int previewX=g_launcherPortrait?48:SW/2+28;
-  const int previewAreaWidth=g_launcherPortrait?SW-96:SW-previewX-56;
-  const int previewHeight=g_launcherPortrait?
-      std::min(highResolutionUi()?720:510,(previewAreaWidth*3)/2):
-      std::min(SH-210,highResolutionUi()?720:510);
-  const int previewWidth=previewHeight*2/3;
-  const int previewY=g_launcherPortrait?topBarH()+20:116;
-  const int startY=g_launcherPortrait?previewY+previewHeight+30:116;
-  const int visible=std::max(1,(SH-startY-settingsFooterReserve())/rowHeight);
+  const GameDetailLayout layout=gameDetailLayout();
+  const int rowHeight=settingsRowH()+8,listX=layout.content.x,listWidth=layout.content.w;
+  const int startY=layout.content.y+44;
+  const int visible=std::max(1,(layout.content.h-52)/rowHeight);
   const std::string temporary=std::string(COVERS_DIR)+"/.sgdb-preview.img";
   int sel=0,top=0,loaded=-1;
   SDL_Texture *preview=nullptr;
@@ -5733,23 +5886,26 @@ static int chooseCoverArtwork(const std::vector<GridDbArtwork> &artworks,const c
 
     clearUiBackground();
     drawLocalizedHeader("Choose cover artwork",gameName);
-    glassPanel(listX-10,startY-10,listWidth+20,std::min(visible,(int)artworks.size())*rowHeight+18);
+    drawSectionHeading("Online artwork",listX,startY-44,listWidth);
+    glassPanel(listX-8,startY-8,listWidth+16,std::min(visible,(int)artworks.size())*rowHeight+16);
     for(int row=0;row<visible&&top+row<(int)artworks.size();row++){
-      int index=top+row,y=startY+row*rowHeight,currentY=y+(rowHeight-TTF_FontHeight(g_font))/2;
+      int index=top+row,y=startY+row*rowHeight,currentY=y+(rowHeight-fontHeight(g_font))/2;
       bool current=index==sel;
-      if(current){ fillRect(listX,y,listWidth,rowHeight-3,COL_FOCUS); fillRect(listX,y,5,rowHeight-3,COL_SEL); }
+      if(current){ drawRowHighlight(listX,y,listWidth,rowHeight-3); }
       std::string label="Artwork "+std::to_string(index+1);
       drawText(g_font,listX+26,currentY,label.c_str(),current?COL_VAL:COL_TXT);
       if(artworks[index].width>0&&artworks[index].height>0){
         std::string dimensions=std::to_string(artworks[index].width)+"x"+std::to_string(artworks[index].height);
-        drawTextR(g_font_sm,listX+listWidth-20,currentY+(TTF_FontHeight(g_font)-TTF_FontHeight(g_font_sm))/2,dimensions.c_str(),current?COL_VAL:COL_DIM);
+        drawTextR(g_font_sm,listX+listWidth-20,currentY+(fontHeight(g_font)-fontHeight(g_font_sm))/2,dimensions.c_str(),current?COL_VAL:COL_DIM);
       }
     }
-    int imageX=previewX+(previewAreaWidth-previewWidth)/2,imageY=previewY;
-    fillRect(imageX,imageY,previewWidth,previewHeight,COL_CARD);
-    if(loaded==sel&&preview){ SDL_Rect destination={imageX,imageY,previewWidth,previewHeight}; SDL_RenderCopy(g_ren,preview,nullptr,&destination); }
-    else if(loaded==sel&&previewFailed) drawTextC(g_font_sm,imageX+previewWidth/2,imageY+previewHeight/2,"Preview unavailable",COL_DIM);
-    border(imageX,imageY,previewWidth,previewHeight,2,loaded==sel?COL_SEL:COL_DIM);
+    drawArtworkPreview(loaded==sel?preview:nullptr,layout.preview);
+    if(loaded==sel&&previewFailed){
+      const SDL_Rect &rect=layout.preview;
+      fillRect(rect.x,rect.y,rect.w,rect.h,COL_CARD);
+      drawWrapped(g_font_sm,rect.x+16,rect.y+rect.h/2-30,rect.w-32,fontHeight(g_font_sm)+6,3,
+        LauncherLocalization::Translate("Preview unavailable").data(),COL_DIM);
+    }
     FootItem footer[]={{g_gA,"Use artwork",FA_NONE},{g_gB,"Back",FA_NONE}};
     drawFooterHints(footer,2,SH-26);
     drawFadeIn(); presentUi(); waitForNextFrame();
@@ -5838,31 +5994,38 @@ static void importCoverFromFile(Game &g){
 }
 
 static void coverSettings(Game &g){
-  int selection=0;const bool portrait=g_launcherPortrait;const int margin=portrait?36:70,gap=portrait?24:30;
-  const int cardsTop=topBarH()+40,cardsBottom=SH-settingsFooterReserve();
-  SDL_Rect cards[2];
-  if(portrait){const int height=(cardsBottom-cardsTop-gap)/2;cards[0]={margin,cardsTop,SW-margin*2,height};cards[1]={margin,cardsTop+height+gap,SW-margin*2,height};}
-  else{const int width=(SW-margin*2-gap)/2;cards[0]={margin,cardsTop,width,cardsBottom-cardsTop};cards[1]={margin+width+gap,cardsTop,width,cardsBottom-cardsTop};}
+  int selection=0;const GameDetailLayout layout=gameDetailLayout();
+  const int gap=20,height=(layout.content.h-gap)/2;
+  const SDL_Rect cards[2]={{layout.content.x,layout.content.y,layout.content.w,height},
+    {layout.content.x,layout.content.y+height+gap,layout.content.w,height}};
   const char *titles[2]={"Download from SteamGridDB","Import cover from file"};const char *kinds[2]={"Online artwork","Local image"};
   const char *descriptions[2]={"Search SteamGridDB and replace this game's custom cover with selected online artwork.","Choose a PNG, JPEG, WebP or BMP image from SD, USB or SMB storage. It is validated and saved safely as PNG."};
   const auto inside=[](const SDL_Rect&r,int x,int y){return x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h;};
   const auto removeCustom=[&]{const std::string path=coverPath(g);if(!regularFileExists(path)||!confirmBox("Remove custom cover?",{uiText("The downloaded or imported cover will be deleted."),uiText("The launcher will use the game's embedded artwork when available.")}))return;
     if(remove(path.c_str())!=0&&errno!=ENOENT)modalMessage(LauncherLocalization::Translate("Cover removal failed").data(),{strerror(errno)});else{fsdevCommitDevice("sdmc");reloadCover(g);toastStatic("Custom cover removed");}};
+  bool hasCustom=regularFileExists(coverPath(g));
   beginScreenFx();for(;;){
     if(!beginUiFrame())return;
-    const bool hasCustom=regularFileExists(coverPath(g));SDL_Event event;navRepeat();
+    SDL_Event event;navRepeat();
     while(pollUiEvent(event)){pumpStick(event);int tx=0,ty=0;TouchKind touch=touchFeed(event,&tx,&ty);bool choose=false;
       if(touch==TOUCH_TAP){if(inside(cards[0],tx,ty)){selection=0;choose=true;}else if(inside(cards[1],tx,ty)){selection=1;choose=true;}else if(ty>=SH-40)return;}
       if(event.type==SDL_CONTROLLERBUTTONDOWN){if(event.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_LEFT||event.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_UP)selection=0;
         else if(event.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_RIGHT||event.cbutton.button==SDL_CONTROLLER_BUTTON_DPAD_DOWN)selection=1;
-        else if(event.cbutton.button==BTN_CONFIRM)choose=true;else if(event.cbutton.button==SDL_CONTROLLER_BUTTON_X&&hasCustom){removeCustom();beginScreenFx();}else if(event.cbutton.button==BTN_CANCEL)return;}
-      if(choose){if(selection==0)downloadCover(g);else importCoverFromFile(g);beginScreenFx();}}
+        else if(event.cbutton.button==BTN_CONFIRM)choose=true;else if(event.cbutton.button==SDL_CONTROLLER_BUTTON_X&&hasCustom){removeCustom();hasCustom=regularFileExists(coverPath(g));beginScreenFx();}else if(event.cbutton.button==BTN_CANCEL)return;}
+      if(choose){if(selection==0)downloadCover(g);else importCoverFromFile(g);hasCustom=regularFileExists(coverPath(g));beginScreenFx();}}
     clearUiBackground();drawLocalizedHeader("Cover settings",g.title.c_str());
-    for(int index=0;index<2;index++){const SDL_Rect&card=cards[index];const bool current=index==selection;fillRect(card.x+5,card.y+7,card.w,card.h,(SDL_Color){0,0,0,62});fillRect(card.x,card.y,card.w,card.h,current?COL_FOCUS:COL_CARD);border(card.x,card.y,card.w,card.h,current?4:2,current?COL_SEL:COL_DIM);if(current)fillRect(card.x,card.y,8,card.h,COL_SEL);
-      const std::string title(LauncherLocalization::Translate(titles[index]));
-      drawTextC(g_font_big,card.x+card.w/2,card.y+34,fittedText(g_font_big,title,card.w-60).c_str(),current?COL_VAL:COL_TXT);
-      drawTextC(g_font,card.x+card.w/2,card.y+(portrait?92:126),LauncherLocalization::Translate(kinds[index]).data(),current?COL_HI:COL_DIM);
-      drawWrapped(g_font_sm,card.x+38,card.y+(portrait?148:194),card.w-76,TTF_FontHeight(g_font_sm)+7,portrait?4:5,LauncherLocalization::Translate(descriptions[index]).data(),current?COL_TXT:COL_DIM);}
+    drawGamePreview(g,layout.preview);
+    for(int index=0;index<2;index++){
+      const SDL_Rect &card=cards[index];const bool current=index==selection;
+      glassPanel(card.x,card.y,card.w,card.h);
+      if(current)drawRowHighlight(card.x+8,card.y+8,card.w-16,card.h-16);
+      const int x=card.x+28,width=card.w-56;
+      drawText(g_font_sm,x,card.y+24,LauncherLocalization::Translate(kinds[index]).data(),COL_HI);
+      const char *title=LauncherLocalization::Translate(titles[index]).data();
+      drawScrollTextL(g_font,x,card.y+62,width,title,current?COL_VAL:COL_TXT);
+      drawWrapped(g_font_sm,x,card.y+112,width,fontHeight(g_font_sm)+7,
+        std::max(1,(card.h-132)/(fontHeight(g_font_sm)+7)),LauncherLocalization::Translate(descriptions[index]).data(),COL_DIM);
+    }
     if(hasCustom){FootItem footer[]={{g_gA,"Choose",FA_NONE},{g_gY,"Remove custom cover",FA_NONE},{g_gB,"Back",FA_NONE}};drawFooterHints(footer,3,SH-26);}else{FootItem footer[]={{g_gA,"Choose",FA_NONE},{g_gB,"Back",FA_NONE}};drawFooterHints(footer,2,SH-26);}
     drawFadeIn();presentUi();waitForNextFrame();}
 }
@@ -5975,15 +6138,13 @@ static bool pickIcon(Game &g, char *outPath, size_t outSize) {
   if(paths.empty()){ toastStatic("No icon found - add a SteamGridDB key or download a cover first"); return false; }
   int n=(int)paths.size(); std::vector<SDL_Texture*> tex(n,nullptr);
   for(int i=0;i<n;i++) tex[i]=IMG_LoadTexture(g_ren,paths[i].c_str());
-  // Adaptive grid: up to 5 columns, cell sized so every row fits on screen.
-  int cols=n<5?n:5; if(cols<1)cols=1;
-  int rows=(n+cols-1)/cols, gap=18, top=150, bot=40;
-  int cw=(SW-80-(cols-1)*gap)/cols, ch=(SH-top-bot-(rows-1)*gap)/rows;
-  int cell=cw<ch?cw:ch; if(cell>200)cell=200; if(cell<90)cell=90;
-  int x0=(SW-(cols*cell+(cols-1)*gap))/2, y0=top;
+  const int cols=std::max(1,std::min(n,g_launcherPortrait?3:5)),rows=(n+cols-1)/cols;
+  const int gap=24,top=topBarH()+32,bottom=SH-settingsFooterReserve()-12;
+  const int cell=std::min({200,(SW-96-(cols-1)*gap)/cols,(bottom-top-(rows-1)*gap)/rows});
+  const int x0=(SW-(cols*cell+(cols-1)*gap))/2,y0=top+(bottom-top-rows*cell-(rows-1)*gap)/2;
   int sel=0, chosen=-1; bool done=false; beginScreenFx();
   while(!done){
-    if (!beginUiFrame()) return false;
+    if (!beginUiFrame()) break;
     SDL_Event e; navRepeat();
     while(pollUiEvent(e)){ pumpStick(e);
       int tx=0,ty=0;TouchKind touch=touchFeed(e,&tx,&ty);
@@ -6008,7 +6169,8 @@ static bool pickIcon(Game &g, char *outPath, size_t outSize) {
     clearUiBackground();
     drawLocalizedHeader("Choose an icon", g.title.c_str());
     for(int i=0;i<n;i++){ int r=i/cols,c=i%cols, x=x0+c*(cell+gap), y=y0+r*(cell+gap);
-      if(i==sel) fillRect(x-6,y-6,cell+12,cell+12,COL_SEL);
+      glassPanel(x-8,y-8,cell+16,cell+16);
+      if(i==sel)border(x-2,y-2,cell+4,cell+4,2,COL_SEL);
       fillRect(x,y,cell,cell,COL_CARD);
       if(tex[i]){ SDL_Rect d{x,y,cell,cell}; SDL_RenderCopy(g_ren,tex[i],nullptr,&d); }
       else drawTextC(g_font_sm,x+cell/2,y+cell/2,"?",COL_DIM);
@@ -6040,14 +6202,12 @@ static void forwarderWizard(Game &g) {
   }
   SDL_Texture *iconTex = icon[0] ? IMG_LoadTexture(g_ren, icon) : nullptr;
 
-  const int isz=g_launcherPortrait?std::min(280,SW-160):280;
-  const int ix=g_launcherPortrait?(SW-isz)/2:110;
-  const int iy=g_launcherPortrait?topBarH()+30:176;
-  const int rx=g_launcherPortrait?56:ix+isz+70;
-  const int rw=g_launcherPortrait?SW-112:SW-rx-90;
-  const int nameY=g_launcherPortrait?iy+isz+62:196;
-  const int createY=g_launcherPortrait?nameY+116:330;
-  const int fieldH=64,createH=58;
+  const GameDetailLayout layout=gameDetailLayout();
+  const int isz=g_launcherPortrait?200:260,ix=layout.preview.x+(layout.preview.w-isz)/2;
+  const int iy=layout.preview.y+(layout.preview.h-isz)/2;
+  const SDL_Rect panel={layout.content.x,layout.content.y+(layout.content.h-280)/2,layout.content.w,280};
+  const int rx=panel.x+24,rw=panel.w-48,nameY=panel.y+32,createY=panel.y+164;
+  const int fieldH=86,createH=68;
   int sel=0; bool done=false; beginScreenFx();              // 0 icon, 1 name, 2 create
 
   auto edit=[&](const char *hdr, char *buf, size_t sz){ char b[256]; if(promptText(hdr, buf, b, sizeof(b)) && b[0]) snprintf(buf,sz,"%.*s",(int)sz-1,b); };
@@ -6071,15 +6231,15 @@ static void forwarderWizard(Game &g) {
   };
 
   while(!done){
-    if (!beginUiFrame()) return;
+    if (!beginUiFrame()) break;
     SDL_Event e; navRepeat();
     while(pollUiEvent(e)){
       pumpStick(e);
       { int tx=0,ty=0; TouchKind tk=touchFeed(e,&tx,&ty);
         if(tk==TOUCH_TAP){
           if(tx>=ix&&tx<ix+isz&&ty>=iy&&ty<iy+isz){ sel=0; activate(); }
-          else if(ty>=nameY-6&&ty<nameY+fieldH){ sel=1; activate(); }
-          else if(ty>=createY-6&&ty<createY+createH){ sel=2; activate(); }
+          else if(tx>=rx-10&&tx<rx+rw+10&&ty>=nameY-6&&ty<nameY+fieldH){ sel=1; activate(); }
+          else if(tx>=rx-10&&tx<rx+rw+10&&ty>=createY-6&&ty<createY+createH){ sel=2; activate(); }
           else if(ty>=SH-40) done=true;
           continue;
         }
@@ -6096,22 +6256,19 @@ static void forwarderWizard(Game &g) {
     }
     clearUiBackground();
     drawLocalizedHeader("Create HOME shortcut", g.title.c_str());
-    // left: icon preview
-    if(sel==0) fillRect(ix-6,iy-6,isz+12,isz+12,COL_SEL);
-    fillRect(ix,iy,isz,isz,COL_CARD);
-    if(iconTex){ SDL_Rect d{ix,iy,isz,isz}; SDL_RenderCopy(g_ren,iconTex,nullptr,&d); }
-    else drawTextC(g_font_sm,ix+isz/2,iy+isz/2,"(no icon)",COL_DIM);
-    drawTextC(g_font_sm, ix+isz/2, iy+isz+20, "Icon", sel==0?COL_VAL:COL_DIM);
-    // right: name field
-    auto field=[&](int idx,int y,const char*label,const char*val){ bool cur=sel==idx;
-      if(cur){ fillRect(rx-10,y-6,rw+20,fieldH,COL_FOCUS); fillRect(rx-10,y-6,5,fieldH,COL_SEL); }
-      drawText(g_font_sm, rx, y, label, cur?COL_VAL:COL_DIM);
-      drawScrollTextL(g_font, rx, y+26, rw-8, val, cur?COL_VAL:COL_TXT); };
-    field(1,nameY,"Name",name);
-    { bool cur=sel==2;
-      fillRect(rx-10,createY-6,rw+20,createH, cur?(SDL_Color){44,86,44,240}:(SDL_Color){30,46,32,200});
-      if(cur) fillRect(rx-10,createY-6,5,createH,COL_SEL);
-      drawTextC(g_font, rx+rw/2, createY+12, "Create shortcut", cur?COL_VAL:(SDL_Color){150,225,150,255}); }
+    drawArtworkPreview(iconTex,{ix,iy,isz,isz},sel==0);
+    drawTextC(g_font_sm,ix+isz/2,iy+isz+20,LauncherLocalization::Translate("Icon").data(),sel==0?COL_VAL:COL_DIM);
+    glassPanel(panel.x,panel.y,panel.w,panel.h);
+    roundedRect(rx-10,nameY-6,rw+20,fieldH,4,COL_CARD);
+    if(sel==1)drawRowHighlight(rx-10,nameY-6,rw+20,fieldH);
+    drawText(g_font_sm,rx+8,nameY+4,LauncherLocalization::Translate("Name").data(),COL_HI);
+    drawScrollTextL(g_font,rx+8,nameY+34,rw-16,name,sel==1?COL_VAL:COL_TXT);
+    roundedRect(rx-10,createY-6,rw+20,createH,4,COL_CARD);
+    if(sel==2)drawRowHighlight(rx-10,createY-6,rw+20,createH);
+    drawTextC(g_font,rx+rw/2,createY-6+(createH-fontHeight(g_font))/2,
+      LauncherLocalization::Translate("Create shortcut").data(),sel==2?COL_VAL:COL_TXT);
+    FootItem footer[]={{g_gA,sel==2?"Create shortcut":"Edit",FA_NONE},{g_gB,"Back",FA_NONE}};
+    drawFooterHints(footer,2,SH-26);
     drawFadeIn(); presentUi(); waitForNextFrame();
   }
   if(iconTex) SDL_DestroyTexture(iconTex);
@@ -6133,32 +6290,59 @@ static void rmrf(const std::string &path) {
   rmdir(path.c_str());
 }
 
+static const char *GAME_MENU_ITEMS[]={"Launch","Per-game settings","Rename game","Cover settings","Favorites & collections","Create HOME shortcut","Clear cache","Clear per-game settings","Delete game (remove from SD)"};
+struct GameMenuLayout {
+  GameDetailLayout detail;
+  int start,rowHeight;
+  int rowY(int index)const{return start+index*rowHeight+(index>=6?56:0);}
+};
+static GameMenuLayout gameMenuLayout(){
+  const GameDetailLayout detail=gameDetailLayout();
+  const int rowHeight=settingsRowH(),height=9*rowHeight+56+44+8;
+  return {detail,detail.content.y+44+std::max(0,(detail.content.h-height)/2),rowHeight};
+}
+static void drawGameMenu(Game &game,int selection){
+  const GameMenuLayout layout=gameMenuLayout();const SDL_Rect &menu=layout.detail.content;
+  clearUiBackground();
+  drawPageHeader(game.title.c_str(),LauncherLocalization::Translate("Game menu").data(),game.title_id.c_str());
+  drawGamePreview(game,layout.detail.preview);
+  drawSectionHeading("General",menu.x,layout.start-44,menu.w);
+  glassPanel(menu.x-8,layout.start-8,menu.w+16,6*layout.rowHeight+16);
+  drawSectionHeading("Manage game",menu.x,layout.rowY(6)-44,menu.w);
+  glassPanel(menu.x-8,layout.rowY(6)-8,menu.w+16,3*layout.rowHeight+16);
+  const float target=(float)(layout.rowY(selection)+2);
+  g_hy=(!g_uiAnimations||g_hy<0)?target:g_hy+(target-g_hy)*0.30f;
+  drawRowHighlight(menu.x,(int)g_hy,menu.w,layout.rowHeight-4);
+  for(int index=0;index<9;index++){
+    const bool current=index==selection,submenu=index==1||index==3||index==4||index==5;
+    const SDL_Color color=index==8?SDL_Color{238,135,135,255}:current?COL_VAL:COL_TXT;
+    drawSettingsRowText(LauncherLocalization::Translate(GAME_MENU_ITEMS[index]).data(),submenu?">":"",
+      layout.rowY(index),menu.w,menu.x+24,menu.x+menu.w-24,current,color,current?COL_VAL:COL_DIM,false,layout.rowHeight);
+  }
+  FootItem footer[]={{g_gA,selection==0?"Launch":"Select",FA_NONE},{g_gB,"Back",FA_NONE}};
+  drawFooterHints(footer,2,SH-26);
+}
+
 static int perGameMenu(Game &g, SDL_GameController *pad) {
-  const char *items[] = { "Launch", "Per-game settings", "Rename game", "Cover settings", "Favorites & collections", "Create HOME shortcut", "Clear cache", "Clear per-game settings", "Delete game (remove from SD)" };
   int n=9, sel=0;
   // load this game's override store
   std::string gp = std::string(GAMECFG_DIR) + "/" + g.key + ".ini";
   storeLoad(g_game, gp.c_str());
-  const int coverWidth=g_launcherPortrait?(highResolutionUi()?300:240):300;
-  const int coverHeight=coverWidth*3/2;
-  const int coverX=g_launcherPortrait?(SW-coverWidth)/2:90;
-  const int coverY=g_launcherPortrait?topBarH()+30:(SH-coverHeight)/2;
-  const int menuX=g_launcherPortrait?56:coverX+coverWidth+64;
-  const int menuWidth=g_launcherPortrait?SW-112:SW-menuX-70;
-  const int menuRowH=g_launcherPortrait?(highResolutionUi()?72:62):56;
-  const int menuStartY=g_launcherPortrait?coverY+coverHeight+40:210;
   beginScreenFx();
   for(;;){
     if (!beginUiFrame()) return 0;
+    const GameMenuLayout layout=gameMenuLayout();
     SDL_Event e;
     navRepeat();
     while(pollUiEvent(e)){
       pumpStick(e);
       { int tx=0,ty=0; TouchKind tk=touchFeed(e,&tx,&ty);              // touchscreen
         if(tk==TOUCH_TAP){
-          if(ty>=SH-40){ return 0; }
-          for(int i=0;i<n;i++){ const int rowTop=menuStartY+i*menuRowH;
-            if(ty>=rowTop && ty<rowTop+menuRowH){ sel=i;
+          if(ty<topBarH()||ty>=SH-40){ return 0; }
+          const SDL_Rect &menu=layout.detail.content;
+          if(tx<menu.x||tx>=menu.x+menu.w)continue;
+          for(int i=0;i<n;i++){ const int rowTop=layout.rowY(i);
+            if(ty>=rowTop && ty<rowTop+layout.rowHeight){ sel=i;
             SDL_Event a; memset(&a,0,sizeof(a)); a.type=SDL_CONTROLLERBUTTONDOWN; a.cbutton.button=BTN_CONFIRM; SDL_PushEvent(&a); break; } }
           continue;
         }
@@ -6214,31 +6398,7 @@ static int perGameMenu(Game &g, SDL_GameController *pad) {
           break;
       }
     }
-    // render: cover on left, menu on right
-    clearUiBackground();
-    if(g_launcherPortrait) drawLocalizedHeader("Game menu",g.title.c_str());
-    g_cover_budget = 1;         // single cover here -- allow it to load
-    ensureCover(g);
-    int cw=coverWidth,chh=coverHeight,cx=coverX,cy=coverY;
-    fillRect(cx+5,cy+7,cw,chh,(SDL_Color){0,0,0,60}); fillRect(cx+2,cy+3,cw,chh,(SDL_Color){0,0,0,75});  // cover shadow
-    if(g.cover){ SDL_SetTextureAlphaMod(g.cover,255); SDL_SetTextureColorMod(g.cover,255,255,255);  // clear any grid dim/fade
-      SDL_Rect d={cx,cy,cw,chh}; SDL_RenderCopy(g_ren,g.cover,nullptr,&d); border(cx,cy,cw,chh,2,COL_DIM); }
-    else { fillRect(cx,cy,cw,chh,(SDL_Color){40,44,54,255}); border(cx,cy,cw,chh,2,COL_DIM); drawTextC(g_font,cx+cw/2,cy+chh/2,"NO COVER",COL_DIM); }
-    if(!g_launcherPortrait)
-      drawScrollTextL(g_font_big,cx+cw+70,120,SW-(cx+cw+70)-50,g.title.c_str(),COL_TXT);
-    int mx=menuX,mw=menuWidth;
-    const int rowInset=g_launcherPortrait?portraitRowInset():2;
-    float ty=(float)(menuStartY+sel*menuRowH+rowInset);
-    g_hy=(!g_uiAnimations||g_hy<0)?ty:g_hy+(ty-g_hy)*0.30f;
-    const int highlightHeight=menuRowH-rowInset*2;
-    fillRect(mx,(int)g_hy,mw,highlightHeight,COL_FOCUS);
-    fillRect(mx,(int)g_hy,5,highlightHeight,COL_SEL);
-    for(int i=0;i<n;i++){const int slot=menuStartY+i*menuRowH,y=slot+(menuRowH-TTF_FontHeight(g_font))/2;const bool cur=i==sel;
-      SDL_Color rc = (i==n-1) ? (SDL_Color){228,120,120,255} : COL_TXT;   // delete row = red
-      const std::string_view translated=LauncherLocalization::Translate(items[i]);
-      std::string shown=fittedText(g_font,translated.data(),mw-52);
-      drawText(g_font,mx+30,y,shown.c_str(),cur?COL_VAL:rc);
-    }
+    drawGameMenu(g,sel);
     drawFadeIn();
     presentUi();
     waitForNextFrame();
@@ -6248,21 +6408,21 @@ static int perGameMenu(Game &g, SDL_GameController *pad) {
 
 // cover grid (main screen). Returns the chosen game index, or -1 to quit.
 // ---------------------------------------------------------------------------
-// Adaptive grid: fixed 2 rows; cover size from height, column count from width.
+// The grid and touch targets share the same layout.
 struct GLay { int cols, rows, cw, chh, gapx, gapy, x0, y0, titleH; };
 static GLay gridLayout(){
   GLay g;
-  bool big=highResolutionUi();
-  g.gapx=big?24:18;g.gapy=big?18:14;
-  if(g_launcherPortrait){g.gapx=big?20:14;g.gapy=big?20:16;}
-  g.titleH=g_showGameTitles?(big?30:24):0;
-  int topBar=topBarH(),footer=g_launcherPortrait?(big?124:96):(big?54:38);
+  g.gapx=32;g.gapy=20;
+  if(g_launcherPortrait){g.gapx=22;g.gapy=20;}
+  g.titleH=g_showGameTitles?fontHeight(g_font_sm):0;
+  const auto hints=libraryFooter();
+  int topBar=topBarH()+18,footer=measureFooter(hints.data(),(int)hints.size()).height+12;
   g.rows = g_gridRows;
   g.cols = g_gridColumns;
   if(g_launcherPortrait){
     const int capacity=g_gridColumns*g_gridRows;
     long long bestArea=-1;int bestColumns=1,bestRows=capacity;
-    const int margin=big?60:32,caption=g.titleH?g.titleH+8:0;
+    const int margin=32,caption=g.titleH?g.titleH+8:0;
     const int availableHeight=SH-topBar-footer;
     for(int columns=1;columns<=capacity;columns++){
       if(capacity%columns)continue;
@@ -6280,7 +6440,7 @@ static GLay gridLayout(){
   int caption=g.titleH?g.titleH+8:0;
   int maxCoverH=(availH-(g.rows-1)*g.gapy-g.rows*caption)/g.rows;
   if(maxCoverH<72) maxCoverH=72;
-  int margin = big?60:(g_launcherPortrait?32:40);
+  int margin=g_launcherPortrait?32:56;
   int autoWidth=maxCoverH*2/3;
   int maxCoverW=(SW-2*margin-(g.cols-1)*g.gapx)/g.cols;
   g.cw=std::max(48,std::min(autoWidth,maxCoverW));
@@ -6312,13 +6472,7 @@ static void drawTitleCell(int cx,int cellW,int y,const std::string&title,bool se
     drawTextC(f,cx,y,shortened.c_str(),col);
     return;
   }
-  SDL_Rect clip={x0,y-2,cellW,(f?TTF_FontHeight(f):26)+8};
-  SDL_RenderSetClipRect(g_ren,&clip);
-  int span=tw-cellW;
-  float t=(SDL_GetTicks()%5000)/5000.0f;
-  float pp = t<0.5f ? t*2.f : (1.f-t)*2.f;
-  drawText(f,x0-(int)(pp*span),y,title.c_str(),col);
-  SDL_RenderSetClipRect(g_ren,nullptr);
+  drawScrollTextL(f,x0,y,cellW,title.c_str(),col);
 }
 
 static void drawScrollTextR(TTF_Font*f,int xRight,int y,int maxW,const char*s,SDL_Color c){
@@ -6326,24 +6480,18 @@ static void drawScrollTextR(TTF_Font*f,int xRight,int y,int maxW,const char*s,SD
   int tw=textW(f,s);
   if(tw<=maxW){ drawTextR(f,xRight,y,s,c); return; }
   int x0=xRight-maxW;
-  SDL_Rect clip={x0,y-2,maxW,(f?TTF_FontHeight(f):26)+6};
+  SDL_Rect clip={x0,y-2,maxW,(f?fontHeight(f):26)+6};
   SDL_RenderSetClipRect(g_ren,&clip);
-  int span=tw-maxW;
-  float t=(SDL_GetTicks()%6000)/6000.0f;
-  float pp=t<0.5f? t*2.f : (1.f-t)*2.f;
-  drawText(f,x0-(int)(pp*span),y,s,c);
+  drawText(f,x0-textScrollOffset(x0,y,tw-maxW,s),y,s,c);
   SDL_RenderSetClipRect(g_ren,nullptr);
 }
 static void drawScrollTextL(TTF_Font*f,int x,int y,int maxW,const char*s,SDL_Color c){
   if(maxW<=0 || !s || !*s) return;
   int tw=textW(f,s);
   if(tw<=maxW){ drawText(f,x,y,s,c); return; }
-  SDL_Rect clip={x,y-2,maxW,(f?TTF_FontHeight(f):26)+6};
+  SDL_Rect clip={x,y-2,maxW,(f?fontHeight(f):26)+6};
   SDL_RenderSetClipRect(g_ren,&clip);
-  int span=tw-maxW;
-  float t=(SDL_GetTicks()%6000)/6000.0f;
-  float pp=t<0.5f? t*2.f : (1.f-t)*2.f;
-  drawText(f,x-(int)(pp*span),y,s,c);
+  drawText(f,x-textScrollOffset(x,y,tw-maxW,s),y,s,c);
   SDL_RenderSetClipRect(g_ren,nullptr);
 }
 
@@ -6356,25 +6504,11 @@ static void renderGrid(int sel,int top,const char*gamedirLabel){
   GLay L=gridLayout();
   int n=(int)g_visibleGames.size(), per=L.cols*L.rows;
   int pages=n?(n+per-1)/per:1,pageIndex=n?sel/per:0,page=pageIndex+1;
-  int bandH = g_launcherPortrait?topBarH()-4:L.y0-4;
-  fillRect(0,0,SW,bandH,COL_PANEL);
-  if(!hasAnimatedBackground()) fillRect(0,bandH,SW,2,COL_SEL);
-  char pinfo[160]; snprintf(pinfo,sizeof(pinfo),"%d / %d    \xc2\xb7    Page %d / %d    \xc2\xb7    Sort: %s",n?sel+1:0,n,page,pages,SORT_NAME[g_sort]);
-  if(g_launcherPortrait){
-    int logoH=highResolutionUi()?62:48;
-    if(g_logo){SDL_Rect logoRect={18,10,logoH,logoH};SDL_RenderCopy(g_ren,g_logo,nullptr,&logoRect);}
-    std::string shownInfo=fittedText(g_font_sm,pinfo,std::max(80,SW-2*(logoH+34)));
-    drawTextC(g_font_sm,SW/2,highResolutionUi()?22:15,shownInfo.c_str(),COL_VAL);
-    std::string shownFolder=fittedText(g_font_sm,topLabel.c_str(),SW-52);
-    drawTextC(g_font_sm,SW/2,bandH-TTF_FontHeight(g_font_sm)-12,shownFolder.c_str(),COL_DIM);
-  } else {
-    int lh=bandH-12;
-    if(g_logo){SDL_Rect ld={26,(bandH-lh)/2,lh,lh};SDL_RenderCopy(g_ren,g_logo,nullptr,&ld);}
-    drawTextC(g_font,SW/2,(bandH-TTF_FontHeight(g_font))/2,pinfo,COL_VAL);
-    int pinfoRight=SW/2+textW(g_font,pinfo)/2;
-    int folderMaxW=(SW-34)-(pinfoRight+24);
-    drawScrollTextR(g_font_sm,SW-34,(bandH-TTF_FontHeight(g_font_sm))/2,folderMaxW,topLabel.c_str(),COL_DIM);
-  }
+  const std::string library=uiText("Library");
+  const std::string eyebrow=library+(topLabel.empty()?"":" · "+topLabel);
+  const std::string summary=std::to_string(n?sel+1:0)+" / "+std::to_string(n)+" · "+uiText("Page")+" "+std::to_string(page)+" / "+std::to_string(pages);
+  const std::string sorting=uiText(SORT_NAME[g_sort]);
+  drawPageHeader(selectedGame?selectedGame->title.c_str():library.c_str(),eyebrow.c_str(),summary.c_str(),sorting.c_str());
 
   int rowStride=L.chh+(L.titleH?L.titleH+8:0)+L.gapy;
   for(int r=0;r<L.rows;r++) for(int c=0;c<L.cols;c++){
@@ -6389,15 +6523,14 @@ static void renderGrid(int sel,int top,const char*gamedirLabel){
     if(g.cover){
       Uint32 el=SDL_GetTicks()-g.coverAt; Uint8 fa=!g_uiAnimations?255:(el<180?(Uint8)(255*el/180):255);
       SDL_SetTextureAlphaMod(g.cover,fa);
-      SDL_SetTextureColorMod(g.cover,cur?255:150,cur?255:150,cur?255:150);
+      SDL_SetTextureColorMod(g.cover,cur?255:225,cur?255:225,cur?255:225);
       SDL_Rect d={x,y,L.cw,L.chh}; SDL_RenderCopy(g_ren,g.cover,nullptr,&d);
     }
     else { fillRect(x,y,L.cw,L.chh,COL_CARD); const std::string_view noCover=LauncherLocalization::Translate("NO COVER");
       const std::string shown=fittedText(g_font_sm,std::string(noCover),L.cw-12);drawTextC(g_font_sm,x+L.cw/2,y+L.chh/2-8,shown.c_str(),COL_DIM); }
     border(x,y,L.cw,L.chh,1,(SDL_Color){12,13,18,255});
     fillRect(x,y,L.cw,1,(SDL_Color){255,255,255,26});
-    if(cur){ const int G=6;
-      for(int i=G;i>=1;i--){ Uint8 a=(Uint8)(150*(G-i+1)/G); border(x-2-i,y-2-i,L.cw+4+2*i,L.chh+4+2*i,1,(SDL_Color){255,170,0,a}); }
+    if(cur){
       border(x-2,y-2,L.cw+4,L.chh+4,2,COL_SEL);
     }
     if(g_showRegionFlags && g.region>0 && g_flag[g.region]){
@@ -6426,13 +6559,9 @@ static void renderGrid(int sel,int top,const char*gamedirLabel){
       (g_games.empty()?"No Vita games found -- install a game from Settings":"No games match this view");
     drawTextC(g_font,SW/2,SH/2,LauncherLocalization::Translate(message).data(),COL_DIM);
   }
-  FootItem foot[] = {
-    { g_gA, "Launch", FA_LAUNCH }, { g_gY, "Sort", FA_SORT },
-    { g_gX, "Settings", FA_SETTINGS }, { g_gPlus, "Game Menu", FA_OPTIONS },
-    { g_gMinus, "Filter", FA_FILTER }, { g_gL, "", FA_PAGEL }, { g_gR, "Page", FA_PAGER }, { g_gB, "Quit", FA_QUIT },
-  };
+  const auto foot=libraryFooter();
+  drawFooterHints(foot.data(),(int)foot.size(),SH-26);
   drawUpdateNotification();
-  drawFooterHints(foot, 8, SH-26);
   presentUi();
 }
 
@@ -6527,7 +6656,7 @@ static void fwProgressCb(int idx, int total, int pct, const char *label,
 // first-start prompt; returns when the user backs out or an install starts.
 static void firmwareSetupFlow() {
   bool installed = firmware_is_installed();
-  const int cy = SH >= 1080 ? 200 : 138;
+  const int cy = 138;
   const int bw = SW * 2 / 3, bh = 64, bx = (SW - bw) / 2;
   const int by0 = cy + 168;              // "Download & install" button
   const int by1 = by0 + bh + 14;         // "Import from storage" button
@@ -6596,6 +6725,12 @@ static void firmwareSetupFlow() {
       pumpStick(e);
       { int tx=0,ty=0; TouchKind tk=touchFeed(e,&tx,&ty);
         if(tk==TOUCH_TAP){
+          const int action=footTapAct(tx,ty);
+          if(action==FA_QUIT)return;
+          if(action==FA_LAUNCH){
+            SDL_Event press{};press.type=SDL_CONTROLLERBUTTONDOWN;press.cbutton.button=BTN_CONFIRM;
+            SDL_PushEvent(&press);continue;
+          }
           if(ty>=SH-40){ return; }                                   // bottom band = back
           if(tx>=bx && tx<bx+bw && ty>=by0 && ty<by0+bh){ sel=0; if(doDownload()) return; continue; }
           if(tx>=bx && tx<bx+bw && ty>=by1 && ty<by1+bh){ sel=1; if(doImport())   return; continue; }
@@ -6627,16 +6762,17 @@ static void firmwareSetupFlow() {
     { bool cur=sel==0;
       fillRect(bx,by0,bw,bh, cur?(SDL_Color){52,100,52,245}:(SDL_Color){38,64,40,215});
       border(bx,by0,bw,bh,2, cur?COL_SEL:COL_DIM);
-      drawTextC(g_font, SW/2, by0+(bh-TTF_FontHeight(g_font))/2, "Download & install firmware  (~350 MB)", cur?COL_VAL:COL_TXT); }
+      drawTextC(g_font, SW/2, by0+(bh-fontHeight(g_font))/2, "Download & install firmware  (~350 MB)", cur?COL_VAL:COL_TXT); }
     { bool cur=sel==1;
       fillRect(bx,by1,bw,bh, cur?(SDL_Color){52,100,52,245}:(SDL_Color){38,64,40,215});
       border(bx,by1,bw,bh,2, cur?COL_SEL:COL_DIM);
-      drawTextC(g_font, SW/2, by1+(bh-TTF_FontHeight(g_font))/2, "Open file manager for PUP files", cur?COL_VAL:COL_TXT); }
+      drawTextC(g_font, SW/2, by1+(bh-fontHeight(g_font))/2, "Open file manager for PUP files", cur?COL_VAL:COL_TXT); }
     { bool cur=sel==2;
       fillRect(bx,by2,bw,bh, cur?(SDL_Color){52,100,52,245}:(SDL_Color){38,64,40,215});
       border(bx,by2,bw,bh,2, cur?COL_SEL:COL_DIM);
-      drawTextC(g_font, SW/2, by2+(bh-TTF_FontHeight(g_font))/2, "Install staged PUP files", cur?COL_VAL:COL_TXT); }
-    drawTextC(g_font_sm, SW/2, SH-40, "A: Select      B: Back", COL_DIM);
+      drawTextC(g_font, SW/2, by2+(bh-fontHeight(g_font))/2, "Install staged PUP files", cur?COL_VAL:COL_TXT); }
+    FootItem footer[]={{g_gA,"Select",FA_LAUNCH},{g_gB,"Back",FA_QUIT}};
+    drawFooterHints(footer,2,SH-26);
     drawFadeIn();
     presentUi();
     waitForNextFrame();
@@ -6809,7 +6945,8 @@ static void cleanupLauncher() {
   destroyGlyphs();
   if (g_logo) SDL_DestroyTexture(g_logo);
   if (g_glowTexture) SDL_DestroyTexture(g_glowTexture);
-  g_logo=nullptr; g_glowTexture=nullptr;
+  if (g_roundTexture) SDL_DestroyTexture(g_roundTexture);
+  g_logo=nullptr; g_glowTexture=nullptr; g_roundTexture=nullptr;
 
   if(g_ren) SDL_SetRenderTarget(g_ren,nullptr);
   if(g_uiTarget) SDL_DestroyTexture(g_uiTarget);
@@ -6818,6 +6955,7 @@ static void cleanupLauncher() {
   if (g_font) TTF_CloseFont(g_font);
   if (g_font_sm) TTF_CloseFont(g_font_sm);
   if (g_font_big) TTF_CloseFont(g_font_big);
+  if (g_font_caption) TTF_CloseFont(g_font_caption);
   g_font=g_font_sm=g_font_big=nullptr;
   if (g_plReady) plExit();
   g_plReady=false;
@@ -6882,10 +7020,10 @@ static void runAppletInstaller(){
   beginScreenFx();
   while(beginUiFrame()){
     if(complete.exchange(false,std::memory_order_acq_rel)){finishWorker();error=std::move(workerError);state=workerOk?State::Installed:State::Failed;}
-    const int panelWidth=std::min(980,SW-120),panelHeight=std::min(SH>=1080?560:450,SH-150);
+    const int panelWidth=std::min(980,SW-120),panelHeight=std::min(450,SH-150);
     const int panelX=(SW-panelWidth)/2,panelY=(SH-panelHeight)/2+20;
-    const int buttonWidth=std::min(700,panelWidth-100),buttonHeight=SH>=1080?112:86;
-    const int buttonX=(SW-buttonWidth)/2,buttonY=panelY+panelHeight-buttonHeight-(SH>=1080?72:55);
+    const int buttonWidth=std::min(700,panelWidth-100),buttonHeight=86;
+    const int buttonX=(SW-buttonWidth)/2,buttonY=panelY+panelHeight-buttonHeight-(55);
     SDL_Event event;while(pollUiEvent(event)){pumpStick(event);int x=0,y=0;const TouchKind touch=touchFeed(event,&x,&y);
       if(touch==TOUCH_TAP&&x>=buttonX&&x<buttonX+buttonWidth&&y>=buttonY&&y<buttonY+buttonHeight&&state!=State::Installing&&state!=State::Installed)install();
       if(event.type==SDL_CONTROLLERBUTTONDOWN){
@@ -6893,7 +7031,7 @@ static void runAppletInstaller(){
         else if(event.cbutton.button==BTN_CANCEL&&state!=State::Installing){finishWorker();return;}
       }}
     clearUiBackground();drawLocalizedHeader("Applet mode installer",nullptr);glassPanel(panelX,panelY,panelWidth,panelHeight);border(panelX,panelY,panelWidth,panelHeight,2,COL_SEL);
-    const int textWidth=panelWidth-(SH>=1080?160:100),lineHeight=SH>=1080?42:32;
+    const int textWidth=panelWidth-(100),lineHeight=32;
     std::vector<std::string> messages;
     auto localized=[](const char *source){return std::string(LauncherLocalization::Translate(source));};
     if(state==State::Installed)messages={localized("Installed on the HOME Menu."),"You can close this installer and launch Vita3K from HOME."};
@@ -6908,7 +7046,7 @@ static void runAppletInstaller(){
     border(buttonX,buttonY,buttonWidth,buttonHeight,3,installed?SDL_Color{100,225,145,255}:failed?SDL_Color{235,125,125,255}:COL_SEL);
     const char *button=installed?"Installed":state==State::Installing?"Installing HOME Menu shortcut...":failed?"Try again":"Install to HOME Menu";
     TTF_Font *buttonFont=textW(g_font_big,LauncherLocalization::Translate(button).data())<=buttonWidth-48?g_font_big:g_font;
-    drawTextC(buttonFont,SW/2,buttonY+(buttonHeight-TTF_FontHeight(buttonFont))/2,LauncherLocalization::Translate(button).data(),COL_VAL);
+    drawTextC(buttonFont,SW/2,buttonY+(buttonHeight-fontHeight(buttonFont))/2,LauncherLocalization::Translate(button).data(),COL_VAL);
     if(state==State::Installed){FootItem footer[]={{g_gB,"Exit",FA_NONE}};drawFooterHints(footer,1,SH-26);}
     else if(state!=State::Installing){FootItem footer[]={{g_gA,failed?"Try again":"Install",FA_NONE},{g_gB,"Exit",FA_NONE}};drawFooterHints(footer,2,SH-26);}
     drawFadeIn();presentUi();waitForNextFrame();
@@ -6961,6 +7099,8 @@ int main(int argc, char **argv){
   if(!g_win) return startupFailure("Could not create the launcher window.");
   g_ren=SDL_CreateRenderer(g_win,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
   if(!g_ren) return startupFailure("Could not create the launcher renderer.");
+  SDL_RendererInfo rendererInfo{};
+  g_presentVsync=SDL_GetRendererInfo(g_ren,&rendererInfo)==0&&(rendererInfo.flags&SDL_RENDERER_PRESENTVSYNC)!=0;
   SDL_SetRenderDrawBlendMode(g_ren,SDL_BLENDMODE_BLEND);
   if(SDL_GetRendererOutputSize(g_ren,&SW,&SH)!=0) return startupFailure("Could not query the display size.");
   if(g_directForwarderBoot){
@@ -6969,6 +7109,7 @@ int main(int argc, char **argv){
     SDL_RenderPresent(g_ren);
   }
   g_outputW=SW;g_outputH=SH;
+  if(!configureLauncherOrientation(0)) return startupFailure("Could not configure the launcher display.");
   { SDL_Surface *ls=IMG_Load("romfs:/logo.png"); if(ls){ g_logo=SDL_CreateTextureFromSurface(g_ren,ls); SDL_FreeSurface(ls); } }
   makeFlags();   // region-flag badges (rendered once, reused per game)
 
@@ -7101,6 +7242,7 @@ int main(int argc, char **argv){
   if(!directGameRequested) startGameScan();
 
   int sel=0, top=0, rows=1;
+  bool keepLibrarySelection=false;
   bool running=true, launch=false;
   std::string launchKey;   // key of the game being launched (== title id; per-game cfg)
   std::string launchTid;   // Vita title id, passed to the emulator as "-r <TITLEID>"
@@ -7131,24 +7273,27 @@ int main(int argc, char **argv){
   }
 
   while(running && beginUiFrame()){
-    std::string selectedKey;
-    if(Game *selected=visibleGame(sel))selectedKey=selected->key;
-    pumpGameScan();
-    if(!selectedKey.empty())sel=visibleIndexForKey(selectedKey);
-    else if(sel>=(int)g_visibleGames.size())sel=std::max(0,(int)g_visibleGames.size()-1);
+    if(!g_libraryScan.finalized){
+      std::string selectedKey;
+      if(keepLibrarySelection)if(Game *selected=visibleGame(sel))selectedKey=selected->key;
+      pumpGameScan();
+      sel=selectedKey.empty()?0:visibleIndexForKey(selectedKey);
+    }
     GLay L=gridLayout();
     int cols=L.cols; rows=L.rows;
+    top=g_visibleGames.empty()?0:(sel/(cols*rows))*rows;
 
     SDL_Event e;
     navRepeat();
     while(pollUiEvent(e)){
       pumpStick(e);
       { int tx=0,ty=0,n=(int)g_visibleGames.size(); TouchKind tk=touchFeed(e,&tx,&ty);   // touchscreen
-        if(tk==TOUCH_SWIPE_L||tk==TOUCH_SWIPE_R){ sel=gridPage(sel,tk==TOUCH_SWIPE_L?+1:-1,cols,rows,n); top=n?(sel/(cols*rows))*rows:0; continue; }
+        if(tk==TOUCH_SWIPE_L||tk==TOUCH_SWIPE_R){ keepLibrarySelection=n>0;sel=gridPage(sel,tk==TOUCH_SWIPE_L?+1:-1,cols,rows,n); top=n?(sel/(cols*rows))*rows:0; continue; }
         if(tk==TOUCH_TAP){
           int fa=footTapAct(tx,ty);
           if(fa==FA_NONE){ int hit=gridHitTest(tx,ty,top);
             if(hit>=0){
+              keepLibrarySelection=true;
               if(hit==sel && n){Game *game=visibleGame(sel);recordPlayed(game->key);launchKey=game->key;launchTid=game->title_id;launch=true;running=false; }
               else sel=hit;                       // first tap selects, second launches
             }
@@ -7172,6 +7317,7 @@ int main(int argc, char **argv){
       }
       if(e.type!=SDL_CONTROLLERBUTTONDOWN) continue;
       int n=(int)g_visibleGames.size();
+      if(n>0)keepLibrarySelection=true;
       switch(e.cbutton.button){
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  sel=gridNav(sel,-1,0,cols,rows,n); break;
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: sel=gridNav(sel,+1,0,cols,rows,n); break;
@@ -7197,7 +7343,7 @@ int main(int argc, char **argv){
         case SDL_CONTROLLER_BUTTON_START:
           if(Game *game=visibleGame(sel)){ int r=perGameMenu(*game,g_pad);
             if(r==1){ recordPlayed(game->key); launchKey=game->key; launchTid=game->title_id; launch=true; running=false; }
-            else if(r==2){ startGameScan(); sel=0; top=0; } }   // game deleted -> re-scan
+            else if(r==2){ startGameScan(); sel=0; top=0; keepLibrarySelection=false; } }   // game deleted -> re-scan
           break;
         case BTN_SETTINGS: {                       // X: settings
           g_active=&g_global; runSettingsRoot(g_pad,nullptr);
@@ -7206,7 +7352,7 @@ int main(int argc, char **argv){
           { GLay updated=gridLayout(); cols=updated.cols; rows=updated.rows;
             int n=(int)g_visibleGames.size(); top=n?(sel/(cols*rows))*rows:0; }
           if(g_pendingInstall){ running=false; break; }   // Install row -> chainload Vita3K --install
-          if(g_rescanAfterSettings){ startGameScan(); sel=0; top=0; g_rescanAfterSettings=false; }
+          if(g_rescanAfterSettings){ startGameScan(); sel=0; top=0; keepLibrarySelection=false; g_rescanAfterSettings=false; }
           break;
         }
         case BTN_CANCEL:
@@ -7218,7 +7364,7 @@ int main(int argc, char **argv){
     }
     pollUpdateNotification();
     renderGrid(sel,top,APP_DIR);
-    waitForNextFrame();
+    waitForNextFrame(!g_libraryScan.finalized);
   }
 
   // persist the launcher's global store (the emulator never touches launcher.ini).
