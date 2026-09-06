@@ -27,14 +27,27 @@
 
 // Class for all needed information to access files on Vita3K.
 class FileStats : public VitaStats {
+#ifdef __SWITCH__
+    SharedFilePtr shared_file;
+    mutable SceOff file_offset = 0;
+#else
     // Shared file pointer
     FilePtr wrapped_file;
+#endif
 
 public:
     // Constructor used for files
     // Based on https://codereview.stackexchange.com/questions/4679/
-    explicit FileStats(const char *vita, const std::string &t, const fs::path &file, const int open) {
+    explicit FileStats(const char *vita, const std::string &t, const fs::path &file, const int open
+#ifdef __SWITCH__
+        , SharedFilePtr shared = {}
+#endif
+    ) {
+#ifdef __SWITCH__
+        shared_file = shared ? std::move(shared) : open_shared_file(file, open);
+#else
         wrapped_file = create_shared_file(file, open);
+#endif
 
         file_info.vita_loc = vita;
         file_info.translated = t;
@@ -58,8 +71,18 @@ public:
 
     // File operations
     FILE *get_file_pointer() const {
+#ifdef __SWITCH__
+        return shared_file ? shared_file->stream.get() : nullptr;
+#else
         return wrapped_file.get();
+#endif
     }
+
+#ifdef __SWITCH__
+    const SharedFilePtr &get_shared_file() const {
+        return shared_file;
+    }
+#endif
 
     // File functions
     SceOff read(void *input_data, int element_size, SceSize element_count) const;

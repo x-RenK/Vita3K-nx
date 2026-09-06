@@ -377,6 +377,12 @@ fs::path expand_path(IOState &io, const char *path, const fs::path &vita_fs_path
     return device::construct_emulated_path(device, translated_path, vita_fs_path, io.redirect_stdio).string();
 }
 
+#ifdef __SWITCH__
+static std::string shared_file_key(const fs::path &path) {
+    return string_utils::tolower(path.lexically_normal().generic_string());
+}
+#endif
+
 SceUID open_file(IOState &io, const char *path, const int flags, const fs::path &vita_fs_path, const char *export_name) {
     auto device = device::get_device(path);
     auto device_for_icase = device;
@@ -412,6 +418,25 @@ SceUID open_file(IOState &io, const char *path, const int flags, const fs::path 
     }
 
     auto system_path = device::construct_emulated_path(device, translated_path, vita_fs_path, io.redirect_stdio);
+#ifdef __SWITCH__
+    const std::unique_lock<std::mutex> open_lock(io.file_mutex);
+    const auto key = shared_file_key(system_path);
+    for (const auto &[open_fd, open_file] : io.std_files) {
+        if (shared_file_key(open_file.get_system_location()) != key)
+            continue;
+        if ((flags & (SCE_O_CREAT | SCE_O_EXCL)) == (SCE_O_CREAT | SCE_O_EXCL))
+            return IO_ERROR(SCE_ERROR_ERRNO_EEXIST);
+        if ((flags | open_file.get_open_mode()) & SCE_O_FDEXCL)
+            return IO_ERROR(SCE_ERROR_ERRNO_EBUSY);
+        const auto &shared = open_file.get_shared_file();
+        if ((flags & SCE_O_WRONLY) && !shared->writable)
+            return IO_ERROR(SCE_ERROR_ERRNO_EACCES);
+        const auto fd = io.next_fd++;
+        const auto normalized = device::construct_normalized_path(device, translated_path);
+        io.std_files.emplace(fd, FileStats{ path, normalized, open_file.get_system_location(), flags, shared });
+        return fd;
+    }
+#endif
     boost::system::error_code fs_ec{};
     if (fs::is_directory(system_path, fs_ec)) {
         LOG_ERROR("Cannot open directory: {}", system_path);
@@ -459,7 +484,9 @@ SceUID open_file(IOState &io, const char *path, const int flags, const fs::path 
     }
     SceUID fd;
     {
+#ifndef __SWITCH__
         const std::lock_guard<std::mutex> lock(io.file_mutex);
+#endif
         fd = io.next_fd++;
         io.std_files.emplace(fd, f);
     }
@@ -713,8 +740,21 @@ int stat_file(IOState &io, const char *file, SceIoStat *statp, const fs::path &v
         const auto translated_path = translate_path(file, device, io.device_paths);
         file_path = device::construct_emulated_path(device, translated_path, vita_fs_path, io.redirect_stdio);
 
+#ifdef __SWITCH__
+        const auto key = shared_file_key(file_path);
+        for (const auto &[open_fd, open_file] : io.std_files) {
+            if (shared_file_key(open_file.get_system_location()) == key) {
+                host_file = open_file.get_file_pointer();
+                break;
+            }
+        }
+#endif
         boost::system::error_code stat_ec{};
-        if (!fs::exists(file_path, stat_ec)) {
+        if (
+#ifdef __SWITCH__
+            !host_file &&
+#endif
+            !fs::exists(file_path, stat_ec)) {
             if (io.case_isens_find_enabled) {
                 // Attempt a case-insensitive file search.
                 const auto original_file_path = file_path;
@@ -738,15 +778,6 @@ int stat_file(IOState &io, const char *file, SceIoStat *statp, const fs::path &v
             }
         }
         LOG_TRACE_IF(log_file_op && log_file_stat, "{}: Statting file: {} ({})", export_name, file, device::construct_normalized_path(device, translated_path));
-#ifdef __SWITCH__
-        // Horizon may refuse to stat a file that is held open.
-        for (auto &[open_fd, open_file] : io.std_files) {
-            if (open_file.get_system_location() == file_path) {
-                host_file = open_file.get_file_pointer();
-                break;
-            }
-        }
-#endif
     } else { // We have previously opened and defined the location
         const auto fd_file = io.std_files.find(fd);
         if (fd_file == io.std_files.end())

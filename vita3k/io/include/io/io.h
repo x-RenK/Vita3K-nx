@@ -18,6 +18,8 @@
 #pragma once
 
 constexpr int SCE_ERROR_ERRNO_ENOENT = 0x80010002; // Associated file or directory does not exist
+constexpr int SCE_ERROR_ERRNO_EACCES = 0x8001000D;
+constexpr int SCE_ERROR_ERRNO_EBUSY = 0x80010010;
 constexpr int SCE_ERROR_ERRNO_EEXIST = 0x80010011; // File exists
 constexpr int SCE_ERROR_ERRNO_EMFILE = 0x80010018; // Too many files are open
 constexpr int SCE_ERROR_ERRNO_EBADFD = 0x80010051; // File descriptor is invalid for this operation

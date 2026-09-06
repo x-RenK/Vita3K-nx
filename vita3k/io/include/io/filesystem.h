@@ -29,6 +29,16 @@
 
 typedef std::shared_ptr<FILE> FilePtr;
 
+#ifdef __SWITCH__
+struct SharedFile {
+    FilePtr stream;
+    bool writable;
+};
+
+using SharedFilePtr = std::shared_ptr<SharedFile>;
+SharedFilePtr open_shared_file(const fs::path &path, int flags);
+#endif
+
 // For opening Boost.Filesystem files, Boost returns wide strings for Windows, normal strings for other OS
 // Dirent and FILE only accept and return wide char strings for Windows, and normal for other OS
 #ifdef _WIN32

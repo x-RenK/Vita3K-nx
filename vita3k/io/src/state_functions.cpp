@@ -22,11 +22,14 @@
 #else
 #define _FILE_OFFSET_BITS 64
 #include <cstdio>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
 
 #include <io/state.h>
+#include <cerrno>
+#include <limits>
 
 static const uint32_t page_size = []() -> uint32_t {
 #ifdef _WIN32
@@ -39,11 +42,22 @@ static const uint32_t page_size = []() -> uint32_t {
 }();
 
 SceOff FileStats::read(void *input_data, const int element_size, const SceSize element_count) const {
-    if (!wrapped_file)
+    if (!get_file_pointer())
         return -1;
 
     if (element_size == 0 || element_count == 0)
         return 0;
+
+#ifdef __SWITCH__
+    if (!(get_open_mode() & SCE_O_RDONLY)) {
+        errno = EBADF;
+        return -1;
+    }
+    auto *file = get_file_pointer();
+    clearerr(file);
+    if (ftello(file) != file_offset && fseeko(file, file_offset, SEEK_SET) != 0)
+        return -1;
+#endif
 
     // we are filling this buffer this data, why would we have to set some parts to 0 before ?
     // that's because host io does not work well with memory trapping and read-only buffer
@@ -54,17 +68,56 @@ SceOff FileStats::read(void *input_data, const int element_size, const SceSize e
         input_addr[i] = 0;
     input_addr[element_size * element_count - 1] = 0;
 
+#ifdef __SWITCH__
+    const auto result = fread(input_data, element_size, element_count, file);
+    const auto position = ftello(file);
+    if (position < 0)
+        return -1;
+    file_offset = position;
+    return result;
+#else
     return fread(input_data, element_size, element_count, wrapped_file.get());
+#endif
 }
 
 SceOff FileStats::write(const void *data, const SceSize size, const int count) const {
     if (!can_write_file())
         return -1;
 
+#ifdef __SWITCH__
+    if (!(get_open_mode() & SCE_O_WRONLY) || !shared_file || !shared_file->writable) {
+        errno = EBADF;
+        return -1;
+    }
+    if (size == 0 || count == 0)
+        return 0;
+    auto *file = get_file_pointer();
+    clearerr(file);
+    const bool append = get_open_mode() & SCE_O_APPEND;
+    if (fseeko(file, append ? 0 : file_offset, append ? SEEK_END : SEEK_SET) != 0)
+        return -1;
+    const auto result = fwrite(data, size, count, file);
+    const auto position = ftello(file);
+    if (position < 0)
+        return -1;
+    file_offset = position;
+    if (fflush(file) != 0)
+        return -1;
+    return result;
+#else
     return fwrite(data, size, count, get_file_pointer());
+#endif
 }
 
 int FileStats::truncate(const SceSize size) const {
+#ifdef __SWITCH__
+    if (!(get_open_mode() & SCE_O_WRONLY) || !shared_file || !shared_file->writable) {
+        errno = EBADF;
+        return -1;
+    }
+    if (fflush(get_file_pointer()) != 0)
+        return -1;
+#endif
 #ifdef _WIN32
     return _chsize_s(_fileno(get_file_pointer()), size);
 #else
@@ -73,8 +126,30 @@ int FileStats::truncate(const SceSize size) const {
 }
 
 bool FileStats::seek(const SceOff offset, const SceIoSeekMode seek_mode) const {
-    if (!wrapped_file)
+    if (!get_file_pointer())
         return false;
+
+#ifdef __SWITCH__
+    SceOff base = 0;
+    switch (seek_mode) {
+    case SCE_SEEK_SET: break;
+    case SCE_SEEK_CUR: base = file_offset; break;
+    case SCE_SEEK_END: {
+        struct stat info{};
+        if (fstat(fileno(get_file_pointer()), &info) != 0)
+            return false;
+        base = info.st_size;
+        break;
+    }
+    default: return false;
+    }
+    if (offset < -base || (offset > 0 && base > std::numeric_limits<SceOff>::max() - offset)) {
+        errno = EINVAL;
+        return false;
+    }
+    file_offset = base + offset;
+    return true;
+#else
 
     auto base = SEEK_SET;
     switch (seek_mode) {
@@ -96,13 +171,16 @@ bool FileStats::seek(const SceOff offset, const SceIoSeekMode seek_mode) const {
 #else
     return fseeko(wrapped_file.get(), offset, base) == 0;
 #endif
+#endif
 }
 
 SceOff FileStats::tell() const {
-    if (!wrapped_file)
+    if (!get_file_pointer())
         return -1;
 
-#ifdef _WIN32
+#ifdef __SWITCH__
+    return file_offset;
+#elif defined(_WIN32)
     return _ftelli64(wrapped_file.get());
 #else
     return ftello(wrapped_file.get());

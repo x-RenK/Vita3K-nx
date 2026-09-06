@@ -18,6 +18,21 @@
 #include <io/filesystem.h>
 #include <io/util.h>
 
+#ifdef __SWITCH__
+SharedFilePtr open_shared_file(const fs::path &path, int flags) {
+    // One writable host stream permits later guest writers without reopening a live reader.
+    const auto host_path = path.generic_path().string();
+    FILE *file = fopen(host_path.c_str(), "rb+");
+    const bool writable = file != nullptr;
+    if (!file && !(flags & SCE_O_WRONLY))
+        file = fopen(host_path.c_str(), "rb");
+    if (!file)
+        return {};
+    setvbuf(file, nullptr, _IOFBF, 256 * 1024);
+    return std::make_shared<SharedFile>(SharedFile{ FilePtr(file, std::fclose), writable });
+}
+#endif
+
 #ifdef _WIN32
 // To open wide files for Boost.Filesystem, we also need the appropriate wide mode flags for Windows, and normal flags for other OS
 const wchar_t *translate_open_mode(const int flags) {
