@@ -170,12 +170,12 @@ static std::string bounded_string(const SceChar8 *data, size_t size) {
 static bool is_addcont_exist(EmuEnvState &emuenv, const SceChar8 *path) {
     const auto dir_name = bounded_string(path, SCE_APPUTIL_NP_DRM_ADDCONT_ID_SIZE);
     const auto drm_content_id_path{ emuenv.vita_fs_path / "ux0" / emuenv.io.device_paths.addcont0 / dir_name };
-    // Non-throwing: the Switch sdmc: fsdev reports an error for a missing or
-    // empty directory rather than answering, and the throwing overloads abort.
     boost::system::error_code ec;
     if (!fs::exists(drm_content_id_path, ec))
         return false;
-    const bool empty = fs::is_empty(drm_content_id_path, ec);
+    // Horizon cannot open directories as files, as Boost's is_empty requires.
+    const fs::directory_iterator entry(drm_content_id_path, ec);
+    const bool empty = entry == fs::directory_iterator{};
     return !ec && !empty;
 }
 
