@@ -96,12 +96,13 @@ bool copy_directory_contents(const fs::path &src_path, const fs::path &dst_path,
             return false;
 
         fs::create_directories(dst_path);
+#ifdef __SWITCH__
+        std::vector<char> buffer(4u * 1024 * 1024);
+#endif
 
         for (const auto &src : fs::recursive_directory_iterator(src_path)) {
 #ifdef __SWITCH__
-            // On the Horizon sdmc: devoptab, fs::relative() canonicalises (prepends
-            // getcwd -> throws) and fs::copy_file writes unreliably, so use a lexical
-            // relative path and a manual stream copy that truncates the destination.
+            // Preserve the sdmc: prefix and copy through buffered writes.
             (void)options;
             const auto relative_path = fs::path(src.path()).lexically_relative(src_path);
 #else
@@ -119,7 +120,14 @@ bool copy_directory_contents(const fs::path &src_path, const fs::path &dst_path,
                     fs::ofstream out(output_path, std::ios::out | std::ios::binary | std::ios::trunc);
                     if (!in.is_open() || !out.is_open())
                         return false;
-                    out << in.rdbuf();
+                    while (in) {
+                        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                        const auto count = in.gcount();
+                        if (count > 0)
+                            out.write(buffer.data(), count);
+                        if (!out)
+                            return false;
+                    }
                     if (in.bad() || !out.good())
                         return false;
                     out.flush();

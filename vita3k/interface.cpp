@@ -229,12 +229,18 @@ static bool install_archive_content(EmuEnvState &emuenv, const ZipPtr &zip, cons
             continue;
         }
         const std::string m_filename = file_stat.m_filename;
-        if (m_filename.contains(content_path)) {
+        if (m_filename.starts_with(content_path)) {
             file_progress = static_cast<float>(i) / num_files * 100.0f;
             update_progress();
 
             std::string replace_filename = m_filename.substr(content_path.size());
-            const fs::path file_output = (output_path / fs_utils::utf8_to_path(replace_filename)).generic_path();
+            const fs::path relative_path = fs_utils::utf8_to_path(replace_filename);
+            if (relative_path.has_root_path() || replace_filename.find_first_of(":\\") != std::string::npos
+                || std::any_of(relative_path.begin(), relative_path.end(), [](const fs::path &part) { return part == ".."; })) {
+                LOG_ERROR("Unsafe archive path: {}", m_filename);
+                return false;
+            }
+            const fs::path file_output = (output_path / relative_path).generic_path();
             if (mz_zip_reader_is_file_a_directory(zip.get(), i)) {
                 prepare_directory(file_output);
             } else {

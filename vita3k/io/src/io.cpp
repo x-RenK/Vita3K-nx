@@ -1034,15 +1034,16 @@ SceUID read_dir(IOState &io, const SceUID fd, SceIoDirent *dent, const fs::path 
 }
 
 bool copy_path(const fs::path &src_path, const fs::path &vita_fs_path, const std::string &app_title_id, const std::string &app_category) {
-    // Check if is path
     if (app_category.contains("gp")) {
         const auto app_path{ vita_fs_path / "ux0/app" / app_title_id };
-        const auto result = fs_utils::copy_directory_contents(src_path, app_path);
+        if (!fs_utils::copy_directory_contents(src_path, app_path))
+            return false;
 
         boost::system::error_code ec{};
         fs::remove_all(src_path, ec);
 
-        return result;
+        if (ec)
+            LOG_WARN("Update installed, but failed to remove '{}' : {}", src_path, ec.message());
     }
 
     return true;

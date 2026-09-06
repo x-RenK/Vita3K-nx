@@ -1518,15 +1518,17 @@ void run_install(EmuEnvState &emuenv, InstallerUI &ui, const fs::path &target = 
                 [&](float pct) { ui.progress(static_cast<int>(pct)); });
             LOG_WARN("install_pkg('{}') returned {}", pkg.filename().string(), ok);
 
-            // Same check as for archives: the launcher lists a game by finding
-            // ux0/app/<id>/sce_sys/param.sfo, so confirm it is really there.
             const std::string &title_id = emuenv.app_info.app_title_id;
-            if (ok && !title_id.empty() && !emuenv.app_info.app_category.contains("gp")) {
-                const fs::path sfo = emuenv.vita_fs_path / "ux0/app" / title_id / "sce_sys" / "param.sfo";
+            const auto &category = emuenv.app_info.app_category;
+            if (ok && !title_id.empty() && category != "theme") {
+                const fs::path installed_root = category == "ac"
+                    ? emuenv.vita_fs_path / "ux0/addcont" / title_id / emuenv.app_info.app_content_id
+                    : emuenv.vita_fs_path / "ux0/app" / title_id;
+                const fs::path sfo = installed_root / "sce_sys/param.sfo";
                 boost::system::error_code ec;
                 if (!fs::is_regular_file(sfo, ec) || ec) {
                     LOG_ERROR("Installer: {} reported success but {} is missing", title_id, sfo.string());
-                    ui.note("FAILED: did not land in ux0/app/" + title_id);
+                    ui.note("FAILED: installed content metadata is missing");
                     ok = false;
                 }
             }
