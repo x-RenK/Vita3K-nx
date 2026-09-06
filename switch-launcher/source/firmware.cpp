@@ -247,6 +247,8 @@ static bool http_download_file(const std::string &url, const std::string &destPa
   remove(tmp.c_str());
   FILE *f = fopen(tmp.c_str(), "wb");
   if (!f) return false;
+  // Combine curl's small chunks into larger SD writes.
+  setvbuf(f, nullptr, _IOFBF, 256 * 1024);
   FileSink sink{f, expectedBytes, 0, false, {}};
   sha256ContextCreate(&sink.hash);
   CURL *c = curl_easy_init();
@@ -254,6 +256,7 @@ static bool http_download_file(const std::string &url, const std::string &destPa
   curl_easy_setopt(c, CURLOPT_URL, url.c_str());
   curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_file_cb);
   curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
+  curl_easy_setopt(c, CURLOPT_BUFFERSIZE, 128L * 1024);
   // Sony serves these immutable blobs directly over HTTP; its CDN certificate
   // does not match these legacy hostnames. Redirects are disabled and every byte
   // is protected by an exact trusted size + SHA-256 content pin below.
