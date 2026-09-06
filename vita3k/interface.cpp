@@ -59,6 +59,7 @@
 
 #include <memory>
 #include <regex>
+#include <set>
 
 typedef std::shared_ptr<mz_zip_archive> ZipPtr;
 
@@ -211,6 +212,14 @@ static bool install_archive_content(EmuEnvState &emuenv, const ZipPtr &zip, cons
             progress_callback({ {}, {}, { file_progress * 0.7f + decrypt_progress * 0.3f } });
     };
 
+    std::set<fs::path> prepared_directories;
+    const auto prepare_directory = [&](const fs::path &path) {
+        if (!prepared_directories.contains(path)) {
+            fs::create_directories(path);
+            prepared_directories.insert(path);
+        }
+    };
+
     mz_uint num_files = mz_zip_reader_get_num_files(zip.get());
     for (mz_uint i = 0; i < num_files; i++) {
         mz_zip_archive_file_stat file_stat;
@@ -225,9 +234,9 @@ static bool install_archive_content(EmuEnvState &emuenv, const ZipPtr &zip, cons
             std::string replace_filename = m_filename.substr(content_path.size());
             const fs::path file_output = (output_path / fs_utils::utf8_to_path(replace_filename)).generic_path();
             if (mz_zip_reader_is_file_a_directory(zip.get(), i)) {
-                fs::create_directories(file_output);
+                prepare_directory(file_output);
             } else {
-                fs::create_directories(file_output.parent_path());
+                prepare_directory(file_output.parent_path());
                 LOG_INFO("Extracting {}", file_output);
                 if (!mz_zip_reader_extract_to_file(zip.get(), i, fs_utils::path_to_utf8(file_output).c_str(), 0)) {
                     // Half an app is not an app. Failing here is what lets the

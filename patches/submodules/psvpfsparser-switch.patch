@@ -48,7 +48,7 @@ index 35a82de8eea467e52da93eb15aaa650cce24b10b..6d561d1b8ff2ab1afec33ab4acddfc06
 +
  int execute(std::string &zrif, std::string &title_src, std::string &title_dst, F00DEncryptorTypes type, std::string &f00d_arg, PfsProgressCallback progress = nullptr);
 diff --git a/Utils.cpp b/Utils.cpp
-index 223c32edecb9a593943cc19abb57b33b73e7a3d7..918eb270b20e2bfc89728d8ba2bbd84546b8e895 100644
+index 223c32edecb9a593943cc19abb57b33b73e7a3d7..eca8c2f71642fef435340631ff750e92c1303de8 100644
 --- a/Utils.cpp
 +++ b/Utils.cpp
 @@ -9,6 +9,9 @@
@@ -101,7 +101,7 @@ index 223c32edecb9a593943cc19abb57b33b73e7a3d7..918eb270b20e2bfc89728d8ba2bbd845
     return psvpfs::path(dest_path.generic_string());
  }
  
-@@ -253,6 +260,21 @@ bool sce_junction::copy_existing_file(const psvpfs::path& source_root, const psv
+@@ -253,6 +260,32 @@ bool sce_junction::copy_existing_file(const psvpfs::path& source_root, const psv
  
     //copy the file
  
@@ -117,13 +117,24 @@ index 223c32edecb9a593943cc19abb57b33b73e7a3d7..918eb270b20e2bfc89728d8ba2bbd845
 +         std::cout << "Failed to copy: " << m_real.generic_string() << " to " << new_path.generic_string() << std::endl;
 +         return false;
 +      }
-+      out << in.rdbuf();
++      std::vector<char> buffer(1024 * 1024);
++      while(in && out)
++      {
++         in.read(buffer.data(), buffer.size());
++         out.write(buffer.data(), in.gcount());
++      }
++      out.close();
++      if(in.bad() || !in.eof() || out.fail())
++      {
++         std::cout << "Failed to copy: " << m_real.generic_string() << " to " << new_path.generic_string() << std::endl;
++         return false;
++      }
 +   }
 +#else
     if(psvpfs::exists(new_path))
        psvpfs::remove(new_path);
  
-@@ -263,6 +285,7 @@ bool sce_junction::copy_existing_file(const psvpfs::path& source_root, const psv
+@@ -263,6 +296,7 @@ bool sce_junction::copy_existing_file(const psvpfs::path& source_root, const psv
        std::cout << "Failed to copy: " << m_real.generic_string() << " to " << new_path.generic_string() << std::endl;
        return false;
     }
@@ -131,7 +142,7 @@ index 223c32edecb9a593943cc19abb57b33b73e7a3d7..918eb270b20e2bfc89728d8ba2bbd845
  
     return true;
  }
-@@ -275,7 +298,20 @@ bool sce_junction::copy_existing_file(const psvpfs::path& source_root, const psv
+@@ -275,7 +309,20 @@ bool sce_junction::copy_existing_file(const psvpfs::path& source_root, const psv
  
     // trim size
     psvpfs::path new_path = source_path_to_dest_path(source_root, destination_root, m_real);

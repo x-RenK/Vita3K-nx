@@ -42,6 +42,7 @@
 
 #include <climits>
 #include <memory>
+#include <set>
 
 // Credits to mmozeiko https://github.com/mmozeiko/pkg2zip
 
@@ -541,6 +542,7 @@ bool install_pkg(const fs::path &pkg_path, EmuEnvState &emuenv, std::string &p_z
 #else
     std::vector<uint8_t> buffer(0x10000);
 #endif
+    std::set<fs::path> prepared_directories;
     for (uint32_t i = 0; i < pkg_file_count; i++) {
         PkgEntry entry{};
         const uint64_t file_offset = static_cast<uint64_t>(items_offset) + static_cast<uint64_t>(i) * sizeof(PkgEntry);
@@ -588,20 +590,19 @@ bool install_pkg(const fs::path &pkg_path, EmuEnvState &emuenv, std::string &p_z
 
         LOG_INFO("{}", string_name);
         const fs::path output_path = path / relative_name;
-        boost::system::error_code fs_error;
+        const bool is_directory = (byte_swap(entry.type) & 0xFF) == 4 || (byte_swap(entry.type) & 0xFF) == 18;
+        const fs::path directory = is_directory ? output_path : output_path.parent_path();
+        if (!prepared_directories.contains(directory)) {
+            boost::system::error_code fs_error;
+            fs::create_directories(directory, fs_error);
+            if (fs_error) {
+                LOG_ERROR("Failed to create pkg directory '{}': {}", directory, fs_error.message());
+                return false;
+            }
+            prepared_directories.insert(directory);
+        }
 
-        if ((byte_swap(entry.type) & 0xFF) == 4 || (byte_swap(entry.type) & 0xFF) == 18) { // Directory
-            fs::create_directories(output_path, fs_error);
-            if (fs_error) {
-                LOG_ERROR("Failed to create pkg directory '{}': {}", output_path, fs_error.message());
-                return false;
-            }
-        } else { // File
-            fs::create_directories(output_path.parent_path(), fs_error);
-            if (fs_error) {
-                LOG_ERROR("Failed to create parent directory for '{}': {}", output_path, fs_error.message());
-                return false;
-            }
+        if (!is_directory) {
             fs::ofstream outfile(output_path, std::ios::out | std::ios::binary | std::ios::trunc);
             if (!outfile.is_open()) {
                 LOG_ERROR("Failed to create pkg output file '{}'", output_path);

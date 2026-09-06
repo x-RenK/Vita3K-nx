@@ -5317,6 +5317,10 @@ static int mz_stat64(const char *path, struct __stat64 *buffer)
         if (!pFile)
             return mz_zip_set_error(pZip, MZ_ZIP_FILE_OPEN_FAILED);
 
+#ifdef __SWITCH__
+        setvbuf(pFile, NULL, _IOFBF, 1024 * 1024);
+#endif
+
         status = mz_zip_reader_extract_to_callback(pZip, file_index, mz_zip_file_write_callback, pFile, flags);
 
         if (MZ_FCLOSE(pFile) == EOF)
