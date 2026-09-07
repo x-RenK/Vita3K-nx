@@ -2059,8 +2059,10 @@ static SpirvCode convert_gxp_to_spirv_impl(const SceGxmProgram &program, const s
 
     std::stringstream disasm_dump;
 
-    // Put disasm storage
-    disasm::disasm_storage = &disasm_dump;
+    struct ScopedDisasmStorage {
+        std::stringstream *previous;
+        ~ScopedDisasmStorage() { disasm::disasm_storage = previous; }
+    } disasm_scope{ std::exchange(disasm::disasm_storage, dumper ? &disasm_dump : nullptr) };
 
     // Entry point
     spv::Function *spv_func_main = b.makeEntryPoint(entry_point_name.c_str());

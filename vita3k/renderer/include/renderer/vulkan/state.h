@@ -146,6 +146,7 @@ struct VKState : public renderer::State {
     vkutil::Buffer default_buffer;
 
     bool support_fsr = false;
+    bool support_pipeline_creation_cache_control = false;
     // support for the VK_KHR_uniform_buffer_standard_layout extension, needed for memory mapping and texture viewport
     bool support_standard_layout = false;
     bool support_rasterized_order_access = false;

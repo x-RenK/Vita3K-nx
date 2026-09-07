@@ -816,6 +816,7 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
 #endif
             // needed for FSR
             { vk::KHRShaderFloat16Int8ExtensionName, &support_fsr },
+            { vk::EXTPipelineCreationCacheControlExtensionName, &support_pipeline_creation_cache_control },
             // used for accurate programmable blending on desktop GPUs
             { vk::EXTFragmentShaderInterlockExtensionName, &support_shader_interlock },
 #ifdef __APPLE__
@@ -952,12 +953,18 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
             features.support_shader_interlock = support_shader_interlock;
         }
 
+        if (support_pipeline_creation_cache_control) {
+            const auto props = physical_device.getFeatures2KHR<vk::PhysicalDeviceFeatures2, vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT>();
+            support_pipeline_creation_cache_control = static_cast<bool>(props.get<vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT>().pipelineCreationCacheControl);
+        }
+
         vk::StructureChain<vk::DeviceCreateInfo,
             vk::PhysicalDeviceBufferDeviceAddressFeatures,
             vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
             vk::PhysicalDeviceShaderFloat16Int8Features,
             vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT,
             vk::PhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT,
+            vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT,
             vk::PhysicalDeviceTimelineSemaphoreFeatures>
             device_info{
                 vk::DeviceCreateInfo{
@@ -973,6 +980,8 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
                     .fragmentShaderSampleInterlock = VK_TRUE },
                 vk::PhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT{
                     .rasterizationOrderColorAttachmentAccess = VK_TRUE },
+                vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT{
+                    .pipelineCreationCacheControl = VK_TRUE },
                 vk::PhysicalDeviceTimelineSemaphoreFeatures{
                     .timelineSemaphore = VK_TRUE }
             };
@@ -990,6 +999,9 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
 
         if (!support_fsr)
             device_info.unlink<vk::PhysicalDeviceShaderFloat16Int8Features>();
+
+        if (!support_pipeline_creation_cache_control)
+            device_info.unlink<vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT>();
 
         if (!support_shader_interlock)
             device_info.unlink<vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT>();
@@ -1469,10 +1481,9 @@ void VKState::swap_window() {
 
     // look once a frame if we need to save the pipeline cache
     const auto time_s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    if (time_s >= pipeline_cache.next_pipeline_cache_save) {
+    auto deadline = pipeline_cache.next_pipeline_cache_save.load(std::memory_order_relaxed);
+    if (time_s >= deadline && pipeline_cache.next_pipeline_cache_save.compare_exchange_strong(deadline, std::numeric_limits<uint64_t>::max(), std::memory_order_relaxed)) {
         pipeline_cache.save_pipeline_cache();
-
-        pipeline_cache.next_pipeline_cache_save = std::numeric_limits<uint64_t>::max();
     }
 }
 
@@ -2131,11 +2142,13 @@ void VKState::preclose_action() {
     // VKState (owns the queue) is destroyed before VKContext (owns the thread).
     request_queue.abort();
 
+#ifndef __SWITCH__
     // make sure we are in a game
     if (shaders_path.empty())
         return;
 
     pipeline_cache.save_pipeline_cache();
+#endif
 }
 
 void VKState::wait_gpu_idle() {

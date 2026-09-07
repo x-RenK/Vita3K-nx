@@ -22,8 +22,12 @@
 #include <vkutil/vkutil.h>
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
+#include <exception>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <thread>
 #include <vector>
@@ -87,12 +91,24 @@ private:
     // render passes used along shader interlock
     std::map<vk::Format, vk::RenderPass> shader_interlock_pass;
 
-    // only used when accessing the shaders map
-    std::mutex shaders_mutex;
-    // because of multithreading, we want the pointers to remain stable
-    unordered_map_stable<Sha256Hash, vk::ShaderModule> shaders;
-    unordered_map_stable<uint64_t, vk::Pipeline> pipelines;
+    struct ShaderEntry {
+        vk::ShaderModule module;
+        bool compiling = false;
+        std::exception_ptr error;
+    };
 
+    struct PipelineEntry {
+        std::atomic<vk::Pipeline> pipeline{ nullptr };
+        bool requested = false;
+    };
+
+    std::mutex shaders_mutex;
+    std::condition_variable shaders_ready;
+    // because of multithreading, we want the pointers to remain stable
+    unordered_map_stable<Sha256Hash, ShaderEntry> shaders;
+    unordered_map_stable<uint64_t, PipelineEntry> pipelines;
+
+    vk::ShaderModule load_shader_module(const Sha256Hash &hash, const SceGxmProgram *program = nullptr, const shader::Hints *hints = nullptr, bool maskupdate = false);
     vk::PipelineShaderStageCreateInfo retrieve_shader(const SceGxmProgram *program, const Sha256Hash &hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb = false, bool has_casts = false);
     bool needs_attribute_bindings(const PipelineVertexProgram &vertex_program) const;
     vk::PipelineVertexInputStateCreateInfo get_vertex_input_state(const PipelineVertexProgram &vertex_program, MemState &mem);
@@ -105,11 +121,11 @@ private:
     // each pipeline compiler thread uses this function as its entrypoint
     void compiler_thread(MemState &mem);
 
-    vk::Pipeline compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const PipelineVertexProgram &vertex_program_gxm, const PipelineFragmentProgram &fragment_program_gxm, const GxmRecordState &record, const shader::Hints &hints, bool has_casts, MemState &mem);
+    vk::Pipeline compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const PipelineVertexProgram &vertex_program_gxm, const PipelineFragmentProgram &fragment_program_gxm, const GxmRecordState &record, const shader::Hints &hints, bool has_casts, bool with_raw_attachment, MemState &mem, bool cache_only = false);
 
 public:
     // if not 0, next time the pipeline cache should be saved (in seconds since epoch)
-    uint64_t next_pipeline_cache_save = std::numeric_limits<uint64_t>::max();
+    std::atomic<uint64_t> next_pipeline_cache_save{ std::numeric_limits<uint64_t>::max() };
 
     // modified by the surface cache, estimates if it is safe to use async pipeline compilation
     // (i.e that it does not causes permanent graphical issues)
@@ -139,7 +155,7 @@ public:
     vk::Pipeline retrieve_pipeline(VKContext &context, SceGxmPrimitiveType &type, bool consider_for_async, MemState &mem);
     bool needs_attribute_bindings(const SceGxmVertexProgram &vertex_program) const;
 
-    vk::ShaderModule precompile_shader(const Sha256Hash &hash, bool search_first = true);
+    vk::ShaderModule precompile_shader(const Sha256Hash &hash);
 
     void set_async_compilation(bool enable);
 };

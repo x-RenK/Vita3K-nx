@@ -30,6 +30,7 @@
 #include <util/switch_storage.h>
 
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -107,6 +108,26 @@ bool get_shaders_cache_hashs(State &renderer) {
     return !renderer.shaders_cache_hashs.empty();
 }
 
+static std::vector<uint8_t> serialize_shader_hashes(State &renderer, const std::vector<ShadersHash> &hashes) {
+    const size_t count = hashes.size();
+    const uint32_t version = shader::CURRENT_VERSION;
+    const uint32_t features = renderer.get_features_mask();
+    std::vector<uint8_t> data(sizeof(count) + sizeof(version) + sizeof(features) + count * 2 * sizeof(Sha256Hash));
+    auto cursor = data.data();
+    const auto append = [&](const void *value, size_t size) {
+        std::memcpy(cursor, value, size);
+        cursor += size;
+    };
+    append(&count, sizeof(count));
+    append(&version, sizeof(version));
+    append(&features, sizeof(features));
+    for (const auto &hash : hashes) {
+        append(hash.frag.data(), sizeof(Sha256Hash));
+        append(hash.vert.data(), sizeof(Sha256Hash));
+    }
+    return data;
+}
+
 void save_shaders_cache_hashs(State &renderer, std::vector<ShadersHash> &shaders_cache_hashs) {
     if (!create_directories_noexcept(renderer.shaders_path))
         return;
@@ -114,49 +135,10 @@ void save_shaders_cache_hashs(State &renderer, std::vector<ShadersHash> &shaders
     fs::ofstream shaders_hashs(renderer.shaders_path / hash_file_name, std::ios::out | std::ios::binary);
 
     if (shaders_hashs.is_open()) {
-        // Write Size of shaders cache hashes list
-        const auto size = shaders_cache_hashs.size();
-        shaders_hashs.write((const char *)&size, sizeof(size));
-
-        // Write version of cache
-        const uint32_t versionInFile = shader::CURRENT_VERSION;
-        shaders_hashs.write((const char *)&versionInFile, sizeof(uint32_t));
-        const uint32_t features_mask = renderer.get_features_mask();
-        shaders_hashs.write((const char *)&features_mask, sizeof(uint32_t));
-
-        // Write shader hash list
-        for (const auto &hash : shaders_cache_hashs) {
-            auto write = [&shaders_hashs](const Sha256Hash &hash) {
-                shaders_hashs.write(reinterpret_cast<const char *>(hash.data()), sizeof(Sha256Hash));
-            };
-
-            write(hash.frag);
-            write(hash.vert);
-        }
+        const auto data = serialize_shader_hashes(renderer, shaders_cache_hashs);
+        shaders_hashs.write(reinterpret_cast<const char *>(data.data()), data.size());
         shaders_hashs.close();
     }
-}
-
-static bool load_shader(const fs::path &shader_name, char **destination, std::size_t &size_read) {
-    fs::ifstream is(shader_name, fs::ifstream::binary);
-    if (!is) {
-        return false;
-    }
-
-    is.seekg(0, fs::ifstream::end);
-    size_read = is.tellg();
-    is.seekg(0);
-
-    if (size_read == 0) {
-        return false;
-    }
-
-    if (destination == nullptr) {
-        return true;
-    }
-
-    is.read(*destination, size_read);
-    return true;
 }
 
 static Sha256Hash get_shader_hash(const SceGxmProgram &program) {
@@ -166,20 +148,24 @@ static Sha256Hash get_shader_hash(const SceGxmProgram &program) {
 
 template <typename R>
 static R load_shader_generic(const fs::path &shader_path) {
-    std::size_t read_size = 0;
+    fs::ifstream file(shader_path, std::ios::binary | std::ios::ate);
+    if (!file)
+        return {};
+
+    const auto size = static_cast<std::streamoff>(file.tellg());
+    if (size <= 0 || size % sizeof(typename R::value_type) != 0)
+        return {};
+
     R source;
-
-    if (load_shader(shader_path, nullptr, read_size)) {
-        source.resize((read_size + sizeof(typename R::value_type) - 1) / sizeof(typename R::value_type));
-
-        char *dest_pointer = reinterpret_cast<char *>(source.data());
-        load_shader(shader_path, &dest_pointer, read_size);
-    }
+    source.resize(static_cast<size_t>(size) / sizeof(typename R::value_type));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char *>(source.data()), size))
+        return {};
 
     return source;
 }
 
-static shader::GeneratedShader load_shader_generic(shader::Target target, const SceGxmProgram &program, const FeatureState &features, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shaderlog_path, const char *shader_type_str, const std::string &shader_version, bool shader_cache, bool shader_debug_dump) {
+static shader::GeneratedShader load_shader_generic(shader::Target target, const SceGxmProgram &program, const FeatureState &features, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shaderlog_path, const char *shader_type_str, const std::string &shader_version, bool shader_cache, bool shader_debug_dump, bool lookup_cache = true) {
     // TODO: no need to recompute the hash here
     const std::string hash_text = hex_string(get_shader_hash(program));
     // Set Shader Hash with Version
@@ -192,7 +178,7 @@ static shader::GeneratedShader load_shader_generic(shader::Target target, const 
     };
 
     const auto shader_path = get_shader_path(shader_type_str);
-    if (shader_cache) {
+    if (shader_cache && lookup_cache) {
         if (target == shader::Target::GLSLOpenGL) {
             std::string source = load_shader_generic<std::string>(shader_path);
             if (!source.empty()) {
@@ -234,7 +220,11 @@ static shader::GeneratedShader load_shader_generic(shader::Target target, const 
         return true;
     };
 
-    shader::GeneratedShader source = shader::convert_gxp(program, hash_text, features, target, hints, maskupdate, false, write_data_with_ext);
+    std::function<bool(const std::string &, const std::string &)> dumper;
+    if (write_shader_debug_files || target == shader::Target::GLSLOpenGL)
+        dumper = write_data_with_ext;
+
+    shader::GeneratedShader source = shader::convert_gxp(program, hash_text, features, target, hints, maskupdate, false, dumper);
 
     // The binary SPIR-V cache is required for performance; textual disassembly
     // and GXP dumps above are optional diagnostics.
@@ -273,14 +263,14 @@ std::string load_glsl_shader(const SceGxmProgram &program, const FeatureState &f
     return load_shader_generic(shader::Target::GLSLOpenGL, program, features, hints, maskupdate, shader_cache_path, shader_log_path, shader_type_str, shader_version, shader_cache, shader_debug_dump).glsl;
 }
 
-std::vector<uint32_t> load_spirv_shader(const SceGxmProgram &program, const FeatureState &features, bool is_vulkan, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shader_log_path, const std::string &shader_version, bool shader_cache, bool shader_debug_dump) {
+std::vector<uint32_t> load_spirv_shader(const SceGxmProgram &program, const FeatureState &features, bool is_vulkan, const shader::Hints &hints, bool maskupdate, const fs::path &shader_cache_path, const fs::path &shader_log_path, const std::string &shader_version, bool shader_cache, bool shader_debug_dump, bool lookup_cache) {
     const shader::Target target = is_vulkan ? shader::Target::SpirVVulkan : shader::Target::SpirVOpenGL;
     auto shader_type_to_str = [](SceGxmProgramType type) {
         return (type == SceGxmProgramType::Vertex) ? "vert.spv.txt" : ((type == SceGxmProgramType::Fragment) ? "frag.spv.txt" : "unknown.spv.txt");
     };
     const char *shader_type_str = shader_type_to_str(program.get_type());
 
-    return load_shader_generic(target, program, features, hints, maskupdate, shader_cache_path, shader_log_path, shader_type_str, shader_version, shader_cache, shader_debug_dump).spirv;
+    return load_shader_generic(target, program, features, hints, maskupdate, shader_cache_path, shader_log_path, shader_type_str, shader_version, shader_cache, shader_debug_dump, lookup_cache).spirv;
 }
 
 std::string pre_load_shader_glsl(const fs::path &shader_path) {
