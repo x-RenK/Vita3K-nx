@@ -106,7 +106,7 @@ int ThreadState::init(const char *name, Ptr<const void> entry_point, int init_pr
 
     std::string alloc_name = fmt::format("Stack for thread {} (#{})", name, id);
     stack = alloc_block(mem, stack_size, alloc_name.c_str());
-    memset(stack.get_ptr<void>().get(mem), 0xcc, stack_size);
+    memset(stack.get_ptr<void>().get(mem), 0, stack_size);
 
     alloc_name = fmt::format("TLS for thread {} (#{})", name, id);
     const size_t tls_size = KERNEL_TLS_SIZE + kernel.tls_msize;

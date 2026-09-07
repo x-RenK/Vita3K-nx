@@ -815,6 +815,14 @@ struct SceKernelSemaInfo {
     SceUInt32 numWaitThreads;
 };
 
+enum SceThreadStatus : SceUInt32 {
+    SCE_THREAD_RUNNING = 1,
+    SCE_THREAD_READY = 2,
+    SCE_THREAD_WAITING = 8,
+    SCE_THREAD_DORMANT = 16,
+    SCE_THREAD_SUSPENDED = 256,
+};
+
 struct SceKernelThreadInfo {
     /** Size of the structure */
     SceSize size;
