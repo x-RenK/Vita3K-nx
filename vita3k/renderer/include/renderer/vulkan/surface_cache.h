@@ -239,6 +239,13 @@ private:
     // use a vector instead of a set because expect it to be always quite small
     std::vector<Address> cpu_surfaces_changed;
 
+    vkutil::Buffer transfer_readback;
+    vkutil::Image transfer_native_image;
+    std::vector<uint32_t> transfer_pixels;
+    vk::Image transfer_source_image = nullptr;
+    uint64_t transfer_source_scene = ~0ULL;
+    Address transfer_source_address = 0;
+
     VKRenderTarget *target = nullptr;
     ColorSurfaceCacheInfo *last_written_surface = nullptr;
     DepthStencilSurfaceCacheInfo *pending_ds_scene = nullptr;
@@ -289,6 +296,7 @@ public:
     bool begin_ds_scene_depth_check(const SceGxmDepthStencilSurface &depth_stencil, bool this_scene_stores, Address scene_color_addr);
     void resolve_ds_scene_end(bool scene_wrote_depth);
     bool try_transfer_depth_gpu(Address src_address, Address dst_address, uint32_t width, uint32_t height);
+    const uint8_t *prepare_color_transfer(const SceGxmTransferImage &source, const SceGxmTransferImage &destination, SceGxmTransferColorKeyMode key_mode);
 
     bool color_surface_has_raw_alias(Address address) const {
         const auto it = color_address_lookup.find(address);

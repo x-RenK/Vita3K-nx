@@ -463,6 +463,12 @@ void VKSurfaceCache::cleanup() {
     depth_address_lookup.clear();
     stencil_address_lookup.clear();
     cpu_surfaces_changed.clear();
+    transfer_readback.destroy();
+    transfer_native_image.destroy();
+    transfer_pixels.clear();
+    transfer_source_image = nullptr;
+    transfer_source_scene = ~0ULL;
+    transfer_source_address = 0;
     target = nullptr;
     last_written_surface = nullptr;
 }
@@ -2414,6 +2420,145 @@ static void swizzle_text_T(T *pixels, uint32_t nb_pixel, ColorSurfaceCacheInfo *
             break;
         }
     }
+}
+
+const uint8_t *VKSurfaceCache::prepare_color_transfer(const SceGxmTransferImage &source, const SceGxmTransferImage &destination, SceGxmTransferColorKeyMode key_mode) {
+    const uint32_t pixel_size = source.format == SCE_GXM_TRANSFER_FORMAT_U8_R ? 1
+        : source.format == SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR ? 4 : 0;
+    if (!state.disable_surface_sync || !pixel_size
+        || destination.format != source.format || source.stride <= 0 || destination.stride <= 0
+        || source.stride % pixel_size || destination.stride % pixel_size || !source.width || !source.height)
+        return nullptr;
+
+    auto &context = *static_cast<VKContext *>(state.context);
+    if (context.is_recording || !context.cmdbuffers_to_submit.empty())
+        return nullptr;
+
+    auto it = color_address_lookup.upper_bound(source.address.address());
+    while (it != color_address_lookup.begin()) {
+        --it;
+        if (uint64_t(it->first) + it->second->total_bytes > source.address.address()
+            && it->second->stride_bytes == uint32_t(source.stride) && it->second->tiling == SurfaceTiling::Linear)
+            break;
+    }
+    if (it == color_address_lookup.end() || it->first > source.address.address())
+        return nullptr;
+    auto &surface = *it->second;
+    const uint64_t delta = uint64_t(source.address.address()) - it->first;
+    const bool format_matches = pixel_size == 1
+        ? surface.format == SCE_GXM_COLOR_BASE_FORMAT_U8 && surface.texture.format == vk::Format::eR8Unorm
+        : surface.format == SCE_GXM_COLOR_BASE_FORMAT_U8U8U8U8
+            && (surface.texture.format == vk::Format::eR8G8B8A8Unorm || surface.texture.format == vk::Format::eR8G8B8A8Srgb);
+    if (*surface.dirty || !format_matches
+        || surface.tiling != SurfaceTiling::Linear || surface.stride_bytes != uint32_t(source.stride)
+        || delta >= surface.total_bytes || delta % pixel_size
+        || surface.last_frame_rendered + MAX_FRAMES_RENDERING <= context.frame_timestamp)
+        return nullptr;
+
+    const uint64_t column = (delta % surface.stride_bytes) / pixel_size + source.x;
+    const uint64_t row = delta / surface.stride_bytes + source.y;
+    if (column + source.width > surface.original_width || row + source.height > surface.original_height
+        || (uint64_t(destination.x) + source.width) * pixel_size > uint32_t(destination.stride))
+        return nullptr;
+    const uint64_t dst_begin = uint64_t(destination.address.address()) + uint64_t(destination.y) * destination.stride + uint64_t(destination.x) * pixel_size;
+    const uint64_t dst_size = uint64_t(source.height - 1) * destination.stride + uint64_t(source.width) * pixel_size;
+    if (dst_begin + dst_size > 0x100000000ULL || !is_valid_addr_range_size(context.mem, Address(dst_begin), dst_size))
+        return nullptr;
+    for (const auto &[address, cached] : color_address_lookup) {
+        if (uint64_t(address) >= dst_begin + dst_size || uint64_t(address) + cached->total_bytes <= dst_begin)
+            continue;
+        // Partial overwrites need to preserve the destination's other GPU pixels.
+        if (key_mode != SCE_GXM_TRANSFER_COLORKEY_NONE || uint64_t(source.width) * pixel_size != uint32_t(destination.stride)
+            || !renderer::texture::readback_range_fits(dst_begin, dst_size, address, cached->total_bytes))
+            return nullptr;
+    }
+
+    if (transfer_source_image != surface.texture.image || transfer_source_scene != context.scene_timestamp
+        || transfer_source_address != it->first) {
+        const uint64_t size = uint64_t(surface.original_width) * surface.original_height * pixel_size;
+        const uint64_t padded_size = uint64_t(surface.stride_bytes) * surface.original_height;
+        if (!size || padded_size > 64ULL * 1024 * 1024)
+            return nullptr;
+        transfer_source_image = nullptr;
+        if (transfer_readback.size < size || !transfer_readback.buffer) {
+            transfer_readback.destroy();
+            transfer_readback.size = size;
+            transfer_readback.init_buffer(vk::BufferUsageFlagBits::eTransferDst, vkutil::vma_mapped_alloc_cached);
+        }
+
+        const std::lock_guard<std::mutex> lock(state.one_time_command_pool_mutex);
+        auto commands = state.device.allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{
+            .commandPool = state.one_time_command_pool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = 1 });
+        auto fence = state.device.createFenceUnique({});
+        const auto cmd = commands.front().get();
+        cmd.begin(vk::CommandBufferBeginInfo{ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+        const auto layout = vkutil::get_underlying_layout(surface.texture.layout);
+        vk::ImageMemoryBarrier barrier{
+            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite, .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+            .oldLayout = layout, .newLayout = layout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = surface.texture.image, .subresourceRange = vkutil::color_subresource_range
+        };
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, barrier);
+        vk::Image image = surface.texture.image;
+        auto copy_layout = layout;
+        if (surface.texture.width != surface.original_width || surface.texture.height != surface.original_height) {
+            if (transfer_native_image.image && (transfer_native_image.width != surface.original_width
+                    || transfer_native_image.height != surface.original_height || transfer_native_image.format != surface.texture.format))
+                transfer_native_image.destroy();
+            if (!transfer_native_image.image) {
+                transfer_native_image.width = surface.original_width;
+                transfer_native_image.height = surface.original_height;
+                transfer_native_image.format = surface.texture.format;
+                transfer_native_image.init_image(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst);
+            }
+            transfer_native_image.transition_to_discard(cmd, vkutil::ImageLayout::TransferDst);
+            const vk::ImageBlit blit{
+                .srcSubresource = vkutil::color_subresource_layer,
+                .srcOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{}, vk::Offset3D{ int32_t(surface.texture.width), int32_t(surface.texture.height), 1 } },
+                .dstSubresource = vkutil::color_subresource_layer,
+                .dstOffsets = std::array<vk::Offset3D, 2>{ vk::Offset3D{}, vk::Offset3D{ surface.original_width, surface.original_height, 1 } }
+            };
+            cmd.blitImage(image, layout, transfer_native_image.image, vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eNearest);
+            transfer_native_image.transition_to(cmd, vkutil::ImageLayout::TransferSrc);
+            image = transfer_native_image.image;
+            copy_layout = vk::ImageLayout::eTransferSrcOptimal;
+        }
+        const vk::BufferImageCopy copy{
+            .imageSubresource = vkutil::color_subresource_layer,
+            .imageExtent = { surface.original_width, surface.original_height, 1 }
+        };
+        cmd.copyImageToBuffer(image, copy_layout, transfer_readback.buffer, copy);
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+        barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, barrier);
+        const vk::MemoryBarrier host_barrier{
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite, .dstAccessMask = vk::AccessFlagBits::eHostRead
+        };
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, host_barrier, {}, {});
+        cmd.end();
+        const vk::SubmitInfo submit{ .commandBufferCount = 1, .pCommandBuffers = &cmd };
+        state.submit_general(submit, fence.get(), "color transfer readback");
+        if (state.device.waitForFences(fence.get(), vk::True, std::numeric_limits<uint64_t>::max()) != vk::Result::eSuccess)
+            throw std::runtime_error("Color transfer readback failed");
+        transfer_readback.invalidate(0, size);
+        transfer_pixels.resize((padded_size + 3) / 4);
+        for (uint32_t y = 0; y < surface.original_height; ++y) {
+            auto *dst = reinterpret_cast<uint8_t *>(transfer_pixels.data()) + size_t(y) * surface.stride_bytes;
+            const auto *src = static_cast<const uint8_t *>(transfer_readback.mapped_data) + size_t(y) * surface.original_width * pixel_size;
+            memcpy(dst, src, size_t(surface.original_width) * pixel_size);
+            if (pixel_size == 4)
+                swizzle_text_T<uint8_t>(dst, surface.original_width, &surface);
+        }
+        transfer_source_image = surface.texture.image;
+        transfer_source_scene = context.scene_timestamp;
+        transfer_source_address = it->first;
+    }
+    for (auto &[address, cached] : color_address_lookup) {
+        if (uint64_t(address) < dst_begin + dst_size && uint64_t(address) + cached->total_bytes > dst_begin)
+            *cached->dirty = true;
+    }
+    return reinterpret_cast<const uint8_t *>(transfer_pixels.data()) + delta;
 }
 
 #ifdef __SWITCH__

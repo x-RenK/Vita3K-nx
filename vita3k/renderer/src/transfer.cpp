@@ -39,8 +39,8 @@ extern "C" {
 namespace renderer {
 
 template <typename T, SceGxmTransferColorKeyMode mode, SceGxmTransferType src_type, SceGxmTransferType dst_type>
-static void perform_transfer_copy_impl(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, uint32_t key_value, uint32_t key_mask) {
-    T *__restrict__ src_ptr = src.address.cast<T>().get(mem);
+static void perform_transfer_copy_impl(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, uint32_t key_value, uint32_t key_mask, const T *source_data = nullptr) {
+    const T *src_ptr = source_data ? source_data : src.address.cast<T>().get(mem);
     T *__restrict__ dst_ptr = dst.address.cast<T>().get(mem);
 
     auto compute_offset = [&](uint32_t dx, uint32_t dy, const SceGxmTransferImage &img, SceGxmTransferType type) -> int32_t {
@@ -68,7 +68,7 @@ static void perform_transfer_copy_impl(MemState &mem, const SceGxmTransferImage 
         const size_t dst_span = (dst.y + dst.height) * (dst.stride ? dst.stride : dst.width * sizeof(T));
         const bool overlaps = src_start < dst_start + dst_span && dst_start < src_start + src_span;
 
-        if (overlaps) {
+        if (overlaps && !source_data) {
             src_copy.assign(src_ptr, src_ptr + src_span / sizeof(T));
             safe_src = src_copy.data();
         }
@@ -96,16 +96,16 @@ static void perform_transfer_copy_impl(MemState &mem, const SceGxmTransferImage 
 }
 
 template <typename T, SceGxmTransferColorKeyMode mode, SceGxmTransferType src_type>
-static void perform_transfer_copy_dst_type(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, SceGxmTransferType dst_type, uint32_t key_value, uint32_t key_mask) {
+static void perform_transfer_copy_dst_type(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, SceGxmTransferType dst_type, uint32_t key_value, uint32_t key_mask, const T *source_data = nullptr) {
     switch (dst_type) {
     case SCE_GXM_TRANSFER_LINEAR:
-        perform_transfer_copy_impl<T, mode, src_type, SCE_GXM_TRANSFER_LINEAR>(mem, src, dst, key_value, key_mask);
+        perform_transfer_copy_impl<T, mode, src_type, SCE_GXM_TRANSFER_LINEAR>(mem, src, dst, key_value, key_mask, source_data);
         break;
     case SCE_GXM_TRANSFER_SWIZZLED:
-        perform_transfer_copy_impl<T, mode, src_type, SCE_GXM_TRANSFER_SWIZZLED>(mem, src, dst, key_value, key_mask);
+        perform_transfer_copy_impl<T, mode, src_type, SCE_GXM_TRANSFER_SWIZZLED>(mem, src, dst, key_value, key_mask, source_data);
         break;
     case SCE_GXM_TRANSFER_TILED:
-        perform_transfer_copy_impl<T, mode, src_type, SCE_GXM_TRANSFER_TILED>(mem, src, dst, key_value, key_mask);
+        perform_transfer_copy_impl<T, mode, src_type, SCE_GXM_TRANSFER_TILED>(mem, src, dst, key_value, key_mask, source_data);
         break;
     default:
         LOG_ERROR("Unknown transfer key mode {}", fmt::underlying(mode));
@@ -114,16 +114,16 @@ static void perform_transfer_copy_dst_type(MemState &mem, const SceGxmTransferIm
 }
 
 template <typename T, SceGxmTransferColorKeyMode mode>
-static void perform_transfer_copy_src_type(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, SceGxmTransferType src_type, SceGxmTransferType dst_type, uint32_t key_value, uint32_t key_mask) {
+static void perform_transfer_copy_src_type(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, SceGxmTransferType src_type, SceGxmTransferType dst_type, uint32_t key_value, uint32_t key_mask, const T *source_data = nullptr) {
     switch (src_type) {
     case SCE_GXM_TRANSFER_LINEAR:
-        perform_transfer_copy_dst_type<T, mode, SCE_GXM_TRANSFER_LINEAR>(mem, src, dst, dst_type, key_value, key_mask);
+        perform_transfer_copy_dst_type<T, mode, SCE_GXM_TRANSFER_LINEAR>(mem, src, dst, dst_type, key_value, key_mask, source_data);
         break;
     case SCE_GXM_TRANSFER_SWIZZLED:
-        perform_transfer_copy_dst_type<T, mode, SCE_GXM_TRANSFER_SWIZZLED>(mem, src, dst, dst_type, key_value, key_mask);
+        perform_transfer_copy_dst_type<T, mode, SCE_GXM_TRANSFER_SWIZZLED>(mem, src, dst, dst_type, key_value, key_mask, source_data);
         break;
     case SCE_GXM_TRANSFER_TILED:
-        perform_transfer_copy_dst_type<T, mode, SCE_GXM_TRANSFER_TILED>(mem, src, dst, dst_type, key_value, key_mask);
+        perform_transfer_copy_dst_type<T, mode, SCE_GXM_TRANSFER_TILED>(mem, src, dst, dst_type, key_value, key_mask, source_data);
         break;
     default:
         LOG_ERROR("Unknown transfer key mode {}", fmt::underlying(mode));
@@ -132,16 +132,16 @@ static void perform_transfer_copy_src_type(MemState &mem, const SceGxmTransferIm
 }
 
 template <typename T>
-static void perform_transfer_copy_mode(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, SceGxmTransferType src_type, SceGxmTransferType dst_type, uint32_t key_value, uint32_t key_mask, SceGxmTransferColorKeyMode mode) {
+static void perform_transfer_copy_mode(MemState &mem, const SceGxmTransferImage &src, const SceGxmTransferImage &dst, SceGxmTransferType src_type, SceGxmTransferType dst_type, uint32_t key_value, uint32_t key_mask, SceGxmTransferColorKeyMode mode, const T *source_data = nullptr) {
     switch (mode) {
     case SCE_GXM_TRANSFER_COLORKEY_NONE:
-        perform_transfer_copy_src_type<T, SCE_GXM_TRANSFER_COLORKEY_NONE>(mem, src, dst, src_type, dst_type, key_value, key_mask);
+        perform_transfer_copy_src_type<T, SCE_GXM_TRANSFER_COLORKEY_NONE>(mem, src, dst, src_type, dst_type, key_value, key_mask, source_data);
         break;
     case SCE_GXM_TRANSFER_COLORKEY_PASS:
-        perform_transfer_copy_src_type<T, SCE_GXM_TRANSFER_COLORKEY_PASS>(mem, src, dst, src_type, dst_type, key_value, key_mask);
+        perform_transfer_copy_src_type<T, SCE_GXM_TRANSFER_COLORKEY_PASS>(mem, src, dst, src_type, dst_type, key_value, key_mask, source_data);
         break;
     case SCE_GXM_TRANSFER_COLORKEY_REJECT:
-        perform_transfer_copy_src_type<T, SCE_GXM_TRANSFER_COLORKEY_REJECT>(mem, src, dst, src_type, dst_type, key_value, key_mask);
+        perform_transfer_copy_src_type<T, SCE_GXM_TRANSFER_COLORKEY_REJECT>(mem, src, dst, src_type, dst_type, key_value, key_mask, source_data);
         break;
     default:
         LOG_ERROR("Unknown transfer key mode {}", fmt::underlying(mode));
@@ -177,6 +177,21 @@ COMMAND(handle_transfer_copy) {
 
     if (colorKeyMode != SCE_GXM_TRANSFER_COLORKEY_NONE && src_fmt != SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR) {
         LOG_ERROR_ONCE("Transfer copy with non-zero key mask not handled for format 0x{:0X}", fmt::underlying(src_fmt));
+    }
+
+    if (renderer.current_backend == Backend::Vulkan && renderer.disable_surface_sync
+        && src_type == SCE_GXM_TRANSFER_LINEAR && dst_type == SCE_GXM_TRANSFER_LINEAR) {
+        auto &cache = static_cast<vulkan::VKState &>(renderer).surface_cache;
+        if (const auto *source = cache.prepare_color_transfer(images[0], images[1], colorKeyMode)) {
+            if (src_fmt == SCE_GXM_TRANSFER_FORMAT_U8_R)
+                perform_transfer_copy_src_type<uint8_t, SCE_GXM_TRANSFER_COLORKEY_NONE>(mem, images[0], images[1], src_type, dst_type,
+                    colorKeyValue, colorKeyMask, source);
+            else
+                perform_transfer_copy_mode<uint32_t>(mem, images[0], images[1], src_type, dst_type,
+                    colorKeyValue, colorKeyMask, colorKeyMode, reinterpret_cast<const uint32_t *>(source));
+            delete[] images;
+            return;
+        }
     }
 
     vulkan::CallbackRequestFunction copy_operation = [=, &mem]() {
