@@ -80,7 +80,7 @@ const char *data_type_str(DataType p) {
     }
 }
 
-std::string reg_to_str(RegisterBank bank, uint32_t reg_num) {
+std::string reg_to_str(RegisterBank bank, uint32_t reg_num, uint8_t index_scale) {
     std::string opstr;
 
     switch (bank) {
@@ -153,7 +153,10 @@ std::string reg_to_str(RegisterBank bank, uint32_t reg_num) {
         }
         }
 
-        opstr += "idx" + std::to_string((int)bank - (int)RegisterBank::INDEXED1 + 1) + " * 2 + " + std::to_string(add_off) + "]";
+        opstr += "idx" + std::to_string((int)bank - (int)RegisterBank::INDEXED1 + 1);
+        if (index_scale != 1)
+            opstr += " * " + std::to_string(index_scale);
+        opstr += " + " + std::to_string(add_off) + "]";
 
         break;
     }
@@ -176,7 +179,7 @@ std::string reg_to_str(RegisterBank bank, uint32_t reg_num) {
 }
 
 std::string operand_to_str(const Operand &op, Imm4 write_mask, int32_t shift) {
-    std::string opstr = reg_to_str(op.bank, op.num + shift);
+    std::string opstr = reg_to_str(op.bank, op.num + shift, op.index_scale);
 
     if (op.flags & RegisterFlags::Negative) {
         opstr = "-" + opstr;

@@ -314,11 +314,12 @@ struct Operand {
     RegisterFlags flags{};
     Swizzle4 swizzle = SWIZZLE_CHANNEL_4_UNDEFINED;
     DataType type = DataType::F32;
+    uint8_t index_scale = 1;
 
     int index{ 0 };
 
     bool is_same(const Operand &op, const Imm4 mask) {
-        return (op.bank == bank) && (is_identical(swizzle, op.swizzle, mask)) && (num == op.num);
+        return (op.bank == bank) && (is_identical(swizzle, op.swizzle, mask)) && (num == op.num) && (index_scale == op.index_scale);
     }
 };
 

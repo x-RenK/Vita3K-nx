@@ -355,6 +355,7 @@ Swizzle4 decode_dual_swizzle(Imm4 swizz, const bool extended, const bool vec4) {
 // Register/Operand decoding
 
 static void finalize_register(Operand &reg, bool is_double_regs, uint8_t reg_bits, bool is_second_program) {
+    reg.index_scale = is_double_regs && (reg.bank == RegisterBank::INDEXED1 || reg.bank == RegisterBank::INDEXED2) ? 2 : 1;
     check_reg_internal(reg, is_double_regs, reg_bits);
 
     if (reg.bank == RegisterBank::SPECIAL)
