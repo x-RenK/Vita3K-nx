@@ -1858,6 +1858,7 @@ bool USSETranslatorVisitor::vdual(
             const spv::Id second = load(ops[1], write_mask_source);
             const spv::Op op = (m_b.getNumComponents(first) > 1) ? spv::OpDot : spv::OpFMul;
             result = m_b.createBinOp(op, type_f32, first, second);
+            result = postprocess_dot_result_for_store(m_b, result, write_mask_dest);
             break;
         }
         case Opcode::FEXP: {
@@ -1879,6 +1880,7 @@ bool USSETranslatorVisitor::vdual(
             const spv::Id source = load(ops[0], write_mask_source);
             const spv::Op op = (m_b.getNumComponents(source) > 1) ? spv::OpDot : spv::OpFMul;
             result = m_b.createBinOp(op, type_f32, source, source);
+            result = postprocess_dot_result_for_store(m_b, result, write_mask_dest);
             break;
         }
         case Opcode::FMAD:
