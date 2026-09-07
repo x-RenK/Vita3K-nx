@@ -390,29 +390,31 @@ bool USSETranslatorVisitor::i16mad(
     inst.opr.src2 = decode_src12(inst.opr.src2, src2_n, src2_bank, src2_bank_ext, false, 7, m_second_program);
 
     inst.opr.dest.type = inst.opr.src0.type = inst.opr.src1.type = inst.opr.src2.type = operate_type;
-    std::uint8_t mask_src1 = 0b1;
-    std::uint8_t mask_src2 = 0b1;
+    std::uint8_t mask_src1 = 0b11;
+    std::uint8_t mask_src2 = 0b11;
     if (src1_format != 0) {
         if (src1_format == 1) {
-            inst.opr.src1.type = (is_signed ? DataType::INT8 : DataType::UINT8);
+            inst.opr.src1.type = DataType::UINT8;
+            mask_src1 = 0b0101;
         } else {
             LOG_DISASM("Only support selecting non sign-extended 8-bit integer for SRC1!");
         }
 
         if (sel1h_upper8) {
-            mask_src1 = 0b10;
+            mask_src1 = 0b1010;
         }
     }
 
     if (src2_format != 0) {
         if (src2_format == 1) {
-            inst.opr.src2.type = (is_signed ? DataType::INT8 : DataType::UINT8);
+            inst.opr.src2.type = DataType::UINT8;
+            mask_src2 = 0b0101;
         } else {
             LOG_DISASM("Only support selecting non sign-extended 8-bit integer for SRC2!");
         }
 
         if (sel2h_upper8) {
-            mask_src2 = 0b10;
+            mask_src2 = 0b1010;
         }
     }
 
@@ -426,14 +428,31 @@ bool USSETranslatorVisitor::i16mad(
     BEGIN_REPEAT(repeat_count);
     GET_REPEAT(inst, RepeatMode::SLMSI);
 
-    LOG_DISASM("{:016x}: {}{} {} {} {} {} [rpt={}]", m_instr, disasm::s_predicate_str(pred), "IMAD16", disasm::operand_to_str(inst.opr.dest, 0b1, dest_repeat_offset),
-        disasm::operand_to_str(inst.opr.src0, 0b1, src0_repeat_offset), disasm::operand_to_str(inst.opr.src1, mask_src1, src1_repeat_offset) + ((src1_format != 0) ? "-8bits" : ""),
+    LOG_DISASM("{:016x}: {}{} {} {} {} {} [rpt={}]", m_instr, disasm::s_predicate_str(pred), "IMAD16", disasm::operand_to_str(inst.opr.dest, 0b11, dest_repeat_offset),
+        disasm::operand_to_str(inst.opr.src0, 0b11, src0_repeat_offset), disasm::operand_to_str(inst.opr.src1, mask_src1, src1_repeat_offset) + ((src1_format != 0) ? "-8bits" : ""),
         disasm::operand_to_str(inst.opr.src2, mask_src2, src2_repeat_offset) + ((src2_format != 0) ? "-8bits" : ""), current_repeat);
 
-    inst.opr.src0.swizzle = SWIZZLE_CHANNEL_4_DEFAULT;
-    spv::Id source0 = load(inst.opr.src0, 0b1, src0_repeat_offset);
-    spv::Id source1 = load(inst.opr.src1, mask_src1, src1_repeat_offset);
-    spv::Id source2 = load(inst.opr.src2, mask_src2, src2_repeat_offset);
+    const auto value_type = m_b.makeVectorType(is_signed ? m_b.makeIntType(32) : m_b.makeUintType(32), 2);
+    auto load_pair = [&](Operand op, std::uint8_t mask, int offset) {
+        spv::Id value;
+        if (op.bank == RegisterBank::IMMEDIATE) {
+            value = load(op, mask, offset);
+        } else {
+            const auto type = op.type;
+            op.type = DataType::F32;
+            auto packed = load(op, 0b1, offset);
+            if (m_b.getTypeId(packed) != m_b.makeFloatType(32))
+                packed = m_b.createUnaryOp(spv::OpBitcast, m_b.makeFloatType(32), packed);
+            value = utils::unpack(m_b, m_util_funcs, m_features, packed, type, SWIZZLE_CHANNEL_4_DEFAULT, mask, 0);
+        }
+        if (m_b.getTypeId(value) != value_type)
+            value = m_b.createUnaryOp(spv::OpBitcast, value_type, value);
+        return value;
+    };
+
+    spv::Id source0 = load_pair(inst.opr.src0, 0b11, src0_repeat_offset);
+    spv::Id source1 = load_pair(inst.opr.src1, mask_src1, src1_repeat_offset);
+    spv::Id source2 = load_pair(inst.opr.src2, mask_src2, src2_repeat_offset);
 
     spv::Id source0_type = m_b.getTypeId(source0);
 
@@ -441,7 +460,14 @@ bool USSETranslatorVisitor::i16mad(
     auto add_result = m_b.createBinOp(spv::OpIAdd, source0_type, mul_result, source2);
 
     if (add_result != spv::NoResult) {
-        store(inst.opr.dest, add_result, 0b1, dest_repeat_offset);
+        if (inst.opr.dest.bank == RegisterBank::INDEX) {
+            store(inst.opr.dest, add_result, 0b1, dest_repeat_offset);
+        } else {
+            auto packed = utils::pack_one(m_b, m_util_funcs, m_features, add_result, operate_type);
+            auto dest = inst.opr.dest;
+            dest.type = DataType::F32;
+            store(dest, packed, 0b1, dest_repeat_offset);
+        }
     }
 
     END_REPEAT();
