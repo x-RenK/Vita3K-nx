@@ -1060,7 +1060,7 @@ EXPORT(SceUID, sceKernelCreateCallback, char *name, SceUInt32 attr, Ptr<SceKerne
 
     ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
     std::string cb_name = name;
-    auto cb = std::make_shared<Callback>(thread_id, cb_name, callbackFunc, pCommon);
+    auto cb = std::make_shared<Callback>(thread, cb_name, callbackFunc, pCommon);
     std::lock_guard lock(emuenv.kernel.mutex);
     SceUID cb_uid = emuenv.kernel.get_next_uid();
     emuenv.kernel.callbacks.emplace(cb_uid, cb);
@@ -1095,15 +1095,31 @@ static int delay_thread(KernelState &kernel, SceUID thread_id, SceUInt delay_us)
 }
 
 static int delay_thread_cb(EmuEnvState &emuenv, SceUID thread_id, SceUInt delay_us) {
-    auto start = std::chrono::high_resolution_clock::now(); // Meseaure the time taken to process callbacks
-    process_callbacks(emuenv.kernel, thread_id);
-    auto end = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
+    if (!thread)
+        return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(delay_us);
+    for (;;) {
+        const auto notifications = thread->callback_notifications.load(std::memory_order_acquire);
+        if (thread->is_delete_requested())
+            return SCE_KERNEL_OK;
+        process_callbacks(emuenv.kernel, thread_id);
 
-    if (delay_us > elapsed.count()) // If we spent less time than requested processing callbacks, sleep the remaining time
-        return delay_thread(emuenv.kernel, thread_id, delay_us - elapsed.count());
-    else // Else return directly
-        return SCE_KERNEL_OK;
+        std::unique_lock<std::mutex> lock(thread->mutex);
+        if (std::chrono::steady_clock::now() >= deadline || thread->is_delete_requested())
+            return SCE_KERNEL_OK;
+
+        thread->update_status(ThreadStatus::wait);
+        const bool interrupted = thread->status_cond.wait_for(lock, deadline - std::chrono::steady_clock::now(), [&] {
+            return thread->status == ThreadStatus::run || thread->is_delete_requested()
+                || thread->callback_notifications.load(std::memory_order_acquire) != notifications;
+        });
+        const bool released = thread->status == ThreadStatus::run || thread->is_delete_requested();
+        if (thread->status == ThreadStatus::wait)
+            thread->update_status(ThreadStatus::run);
+        if (!interrupted || released)
+            return SCE_KERNEL_OK;
+    }
 }
 
 EXPORT(int, sceKernelDelayThread, SceUInt delay) {

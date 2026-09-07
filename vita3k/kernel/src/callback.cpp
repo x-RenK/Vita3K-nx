@@ -22,14 +22,26 @@
 
 #include <mutex>
 
+Callback::Callback(const ThreadStatePtr &thread, std::string &name, Ptr<SceKernelCallbackFunction> cb_func, Ptr<void> pCommon)
+    : thread_id(thread->id)
+    , owner_thread(thread)
+    , name(name)
+    , cb_func(cb_func)
+    , userdata(pCommon) {}
+
 uint32_t process_callbacks(KernelState &kernel, SceUID thread_id) {
     ThreadStatePtr thread = kernel.get_thread(thread_id);
-    if (thread->is_processing_callbacks)
+    if (!thread || thread->is_processing_callbacks)
         return 0;
 
     thread->is_processing_callbacks = true;
     uint32_t num_callbacks_processed = 0;
-    for (CallbackPtr &cb : thread->callbacks) {
+    std::vector<CallbackPtr> callbacks;
+    {
+        const std::lock_guard lock(kernel.mutex);
+        callbacks = thread->callbacks;
+    }
+    for (const CallbackPtr &cb : callbacks) {
         if (cb->is_executable()) {
             std::string name = cb->get_name();
             cb->execute(kernel, [name]() {
@@ -44,10 +56,16 @@ uint32_t process_callbacks(KernelState &kernel, SceUID thread_id) {
 }
 
 void Callback::notify(SceUID notifier_id, SceInt32 notify_arg) {
-    std::lock_guard lock(this->_mutex);
-    this->notifier_id = notifier_id;
-    this->notification_arg = notify_arg;
-    this->num_notifications++;
+    {
+        std::lock_guard lock(this->_mutex);
+        this->notifier_id = notifier_id;
+        this->notification_arg = notify_arg;
+        this->num_notifications++;
+    }
+    if (const auto thread = owner_thread.lock()) {
+        thread->callback_notifications.fetch_add(1, std::memory_order_release);
+        thread->status_cond.notify_all();
+    }
 }
 
 void Callback::event_notify(SceUID notifier_id) {
@@ -97,7 +115,10 @@ void Callback::execute(KernelState &kernel, const std::function<void()> &deleter
         this->reset();
     }
 
-    int ret = kernel.get_thread(this->thread_id)->run_callback(this->cb_func.address(), args);
+    const auto thread = owner_thread.lock();
+    if (!thread)
+        return;
+    int ret = thread->run_callback(this->cb_func.address(), args);
     if (ret != 0) {
         deleter();
     }

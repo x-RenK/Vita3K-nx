@@ -34,11 +34,7 @@ struct Callback {
      * @param cb_func Pointer to the callback function
      * @param pCommon User-provided parameter
      */
-    Callback(SceUID thread_id, std::string &name, Ptr<SceKernelCallbackFunction> cb_func, Ptr<void> pCommon)
-        : thread_id(thread_id)
-        , name(name)
-        , cb_func(cb_func)
-        , userdata(pCommon) {}
+    Callback(const ThreadStatePtr &thread, std::string &name, Ptr<SceKernelCallbackFunction> cb_func, Ptr<void> pCommon);
 
     /**
      * @return UID of the thread that created and owns this callback
@@ -117,6 +113,7 @@ private:
     std::mutex _mutex;
 
     const SceUID thread_id; // UID of the thread that created this callback
+    const std::weak_ptr<ThreadState> owner_thread;
     const std::string name; // Name of the callback
     const Ptr<SceKernelCallbackFunction> cb_func; // Function to execute when the callback should run
     const Ptr<void> userdata; // User-provided data - passed as pCommon

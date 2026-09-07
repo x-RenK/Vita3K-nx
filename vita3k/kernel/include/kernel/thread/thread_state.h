@@ -159,6 +159,7 @@ struct ThreadState {
 
     ThreadSignal signal;
     std::vector<CallbackPtr> callbacks;
+    std::atomic<uint64_t> callback_notifications{ 0 };
     ThreadStatusCondition status_cond;
     std::vector<std::shared_ptr<ThreadState>> waiting_threads;
     uint32_t returned_value = 0;
