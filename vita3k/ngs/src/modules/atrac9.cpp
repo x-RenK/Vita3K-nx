@@ -252,6 +252,11 @@ bool Atrac9Module::decode_more_data(KernelState &kern, const MemState &mem, cons
         state->current_byte_position_in_buffer += runtime->decoder->get_es_size();
     }
 
+    if (got_decode_error) {
+        std::fill(runtime->decoded_superframe_samples.begin() + decoded_superframe_pos,
+            runtime->decoded_superframe_samples.end(), 0);
+    }
+
     const int32_t sample_rate = data.parent->rack->system->sample_rate;
     if (params->playback_scalar != 1 || static_cast<int>(std::round(params->playback_frequency)) != sample_rate) {
         LOG_INFO_ONCE("The currently running game requests playback rate scaling when decoding audio. Audio might crackle.");
