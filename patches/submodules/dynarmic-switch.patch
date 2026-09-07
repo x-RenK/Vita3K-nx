@@ -1034,3 +1034,217 @@ index dda0fc46..667776ab 100644
  TEST_CASE("thumb: lsls r0, r1, #2", "[thumb]") {
      ThumbTestEnv test_env;
      Dynarmic::A32::Jit jit{GetUserConfig(&test_env)};
+diff --git a/src/dynarmic/backend/arm64/emit_arm64.cpp b/src/dynarmic/backend/arm64/emit_arm64.cpp
+index 1ecb5424..a1500e00 100644
+--- a/src/dynarmic/backend/arm64/emit_arm64.cpp
++++ b/src/dynarmic/backend/arm64/emit_arm64.cpp
+@@ -191,6 +191,55 @@ static void EmitAddCycles(oaknut::CodeGenerator& code, EmitContext& ctx, size_t
+     }
+ }
+ 
++static tsl::robin_map<IR::Inst*, IR::Inst*> FindMultiplyAdds(IR::Block& block) {
++    tsl::robin_map<IR::Inst*, IR::Inst*> pairs;
++    for (auto& inst : block) {
++        const auto op = inst.GetOpcode();
++        const bool sub = op == IR::Opcode::Sub32 || op == IR::Opcode::Sub64;
++        if (!sub && op != IR::Opcode::Add32 && op != IR::Opcode::Add64) {
++            continue;
++        }
++        if (inst.HasAssociatedPseudoOperation() || !inst.GetArg(2).IsImmediate() || inst.GetArg(2).GetU1() != sub) {
++            continue;
++        }
++        const auto mul_op = inst.GetType() == IR::Type::U32 ? IR::Opcode::Mul32 : IR::Opcode::Mul64;
++        for (size_t i = sub ? 1 : 0; i < 2; ++i) {
++            const auto product = inst.GetArg(i);
++            if (product.IsImmediate() || inst.GetArg(1 - i).IsImmediate()) {
++                continue;
++            }
++            auto* mul = product.GetInst();
++            if (mul->GetOpcode() != mul_op || mul->UseCount() != 1 || mul->HasAssociatedPseudoOperation()) {
++                continue;
++            }
++            pairs.emplace(mul, nullptr);
++            pairs.emplace(&inst, mul);
++            break;
++        }
++    }
++    return pairs;
++}
++
++template<size_t bitsize>
++static void EmitMultiplyAdd(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst, IR::Inst* mul) {
++    const bool sub = inst->GetOpcode() == IR::Opcode::Sub32 || inst->GetOpcode() == IR::Opcode::Sub64;
++    const auto accumulator = inst->GetArg(inst->GetArg(0).GetInst() == mul ? 1 : 0);
++    // Consume the multiply inputs here so they stay live until the combined instruction.
++    auto lhs = ctx.reg_alloc.GetArgument(mul->GetArg(0));
++    auto rhs = ctx.reg_alloc.GetArgument(mul->GetArg(1));
++    auto acc = ctx.reg_alloc.GetArgument(accumulator);
++    auto result = ctx.reg_alloc.WriteReg<bitsize>(inst);
++    auto Rlhs = ctx.reg_alloc.ReadReg<bitsize>(lhs);
++    auto Rrhs = ctx.reg_alloc.ReadReg<bitsize>(rhs);
++    auto Racc = ctx.reg_alloc.ReadReg<bitsize>(acc);
++    RegAlloc::Realize(result, Rlhs, Rrhs, Racc);
++    if (sub) {
++        code.MSUB(*result, *Rlhs, *Rrhs, *Racc);
++    } else {
++        code.MADD(*result, *Rlhs, *Rrhs, *Racc);
++    }
++}
++
+ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const EmitConfig& conf, FastmemManager& fastmem_manager) {
+     if (conf.very_verbose_debugging_output) {
+         std::puts(IR::DumpBlock(block).c_str());
+@@ -201,6 +250,9 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
+     FpsrManager fpsr_manager{code, conf.state_fpsr_offset};
+     RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER};
+     EmitContext ctx{block, reg_alloc, conf, ebi, fpsr_manager, fastmem_manager, {}};
++    const auto multiply_adds = conf.HasOptimization(OptimizationFlag::MiscIROpt)
++                                 ? FindMultiplyAdds(block)
++                                 : tsl::robin_map<IR::Inst*, IR::Inst*>{};
+ 
+     ebi.entry_point = code.xptr<CodePtr>();
+ 
+@@ -220,7 +272,17 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
+     for (auto iter = block.begin(); iter != block.end(); ++iter) {
+         IR::Inst* inst = &*iter;
+ 
+-        switch (inst->GetOpcode()) {
++        if (const auto combined = multiply_adds.find(inst); combined != multiply_adds.end()) {
++            if (!combined->second) {
++                continue;
++            }
++            if (inst->GetType() == IR::Type::U32) {
++                EmitMultiplyAdd<32>(code, ctx, inst, combined->second);
++            } else {
++                EmitMultiplyAdd<64>(code, ctx, inst, combined->second);
++            }
++        } else {
++            switch (inst->GetOpcode()) {
+ #define OPCODE(name, type, ...)                    \
+     case IR::Opcode::name:                         \
+         EmitIR<IR::Opcode::name>(code, ctx, inst); \
+@@ -237,9 +299,10 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
+ #undef OPCODE
+ #undef A32OPC
+ #undef A64OPC
+-        default:
+-            ASSERT_FALSE("Invalid opcode: {}", inst->GetOpcode());
+-            break;
++            default:
++                ASSERT_FALSE("Invalid opcode: {}", inst->GetOpcode());
++                break;
++            }
+         }
+ 
+         reg_alloc.UpdateAllUses();
+diff --git a/src/dynarmic/backend/arm64/reg_alloc.cpp b/src/dynarmic/backend/arm64/reg_alloc.cpp
+index fedee02f..8542acfa 100644
+--- a/src/dynarmic/backend/arm64/reg_alloc.cpp
++++ b/src/dynarmic/backend/arm64/reg_alloc.cpp
+@@ -130,16 +130,21 @@ void HostLocInfo::UpdateUses() {
+ RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
+     ArgumentInfo ret = {Argument{*this}, Argument{*this}, Argument{*this}, Argument{*this}};
+     for (size_t i = 0; i < inst->NumArgs(); i++) {
+-        const IR::Value arg = inst->GetArg(i);
+-        ret[i].value = arg;
+-        if (!arg.IsImmediate() && !IsValuelessType(arg.GetType())) {
+-            ASSERT_MSG(ValueLocation(arg.GetInst()), "argument must already been defined");
+-            ValueInfo(arg.GetInst()).uses_this_inst++;
+-        }
++        ret[i].value = GetArgument(inst->GetArg(i)).value;
+     }
+     return ret;
+ }
+ 
++Argument RegAlloc::GetArgument(IR::Value value) {
++    Argument arg{*this};
++    arg.value = value;
++    if (!value.IsImmediate() && !IsValuelessType(value.GetType())) {
++        ASSERT_MSG(ValueLocation(value.GetInst()), "argument must already been defined");
++        ValueInfo(value.GetInst()).uses_this_inst++;
++    }
++    return arg;
++}
++
+ bool RegAlloc::WasValueDefined(IR::Inst* inst) const {
+     return defined_insts.count(inst) > 0;
+ }
+diff --git a/src/dynarmic/backend/arm64/reg_alloc.h b/src/dynarmic/backend/arm64/reg_alloc.h
+index 3a2d5388..95300214 100644
+--- a/src/dynarmic/backend/arm64/reg_alloc.h
++++ b/src/dynarmic/backend/arm64/reg_alloc.h
+@@ -161,6 +161,7 @@ public:
+             : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, rand_gen{std::random_device{}()} {}
+ 
+     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
++    Argument GetArgument(IR::Value value);
+     bool WasValueDefined(IR::Inst* inst) const;
+ 
+     auto ReadX(Argument& arg) { return RAReg<oaknut::XReg>{*this, RWType::Read, arg.value, nullptr}; }
+diff --git a/tests/A32/test_arm_instructions.cpp b/tests/A32/test_arm_instructions.cpp
+index 3232f1a8..a411f43e 100644
+--- a/tests/A32/test_arm_instructions.cpp
++++ b/tests/A32/test_arm_instructions.cpp
+@@ -18,6 +18,62 @@ static A32::UserConfig GetUserConfig(ArmTestEnv* testenv) {
+     return user_config;
+ }
+ 
++TEST_CASE("arm: Multiply accumulation preserves results and flags", "[arm][A32]") {
++    for (const bool combine : {false, true}) {
++        ArmTestEnv test_env;
++        auto config = GetUserConfig(&test_env);
++        if (!combine) {
++            config.optimizations &= ~OptimizationFlag::MiscIROpt;
++        }
++        A32::Jit jit{config};
++        test_env.code_mem = {
++            0xe0232190,  // mla r3, r0, r1, r2
++            0xe0642190,  // mls r4, r0, r1, r2
++            0xe0050190,  // mul r5, r0, r1
++            0xe0856002,  // add r6, r5, r2
++            0xe0527005,  // subs r7, r2, r5
++            0xe0a28003,  // adc r8, r2, r3
++            0xe0aa9190,  // umlal r9, r10, r0, r1
++            0xe03b2190,  // mlas r11, r0, r1, r2
++            0xeafffffe,  // b .
++        };
++        constexpr std::array<u32, 6> values{0, 1, 2, 0x7fffffff, 0x80000000, 0xffffffff};
++        for (const u32 a : values) {
++            for (const u32 b : values) {
++                for (const u32 c : values) {
++                    jit.Regs() = {};
++                    jit.Regs()[0] = a;
++                    jit.Regs()[1] = b;
++                    jit.Regs()[2] = c;
++                    jit.Regs()[9] = c;
++                    jit.Regs()[10] = a;
++                    jit.SetCpsr(0x000001d0);
++                    test_env.ticks_left = 9;
++                    jit.Run();
++
++                    const u32 product = u32(u64(a) * b);
++                    const u32 sum = product + c;
++                    const u32 difference = c - product;
++                    const u32 carry = c >= product;
++                    const u32 overflow = ((c ^ product) & (c ^ difference)) >> 31;
++                    const u32 flags = (sum & 0x80000000) | (u32(sum == 0) << 30) | (carry << 29) | (overflow << 28);
++                    const u64 accumulated = ((u64(a) << 32) | c) + u64(a) * b;
++                    REQUIRE(jit.Regs()[3] == sum);
++                    REQUIRE(jit.Regs()[4] == difference);
++                    REQUIRE(jit.Regs()[5] == product);
++                    REQUIRE(jit.Regs()[6] == sum);
++                    REQUIRE(jit.Regs()[7] == difference);
++                    REQUIRE(jit.Regs()[8] == u32(c + sum + carry));
++                    REQUIRE(jit.Regs()[9] == u32(accumulated));
++                    REQUIRE(jit.Regs()[10] == u32(accumulated >> 32));
++                    REQUIRE(jit.Regs()[11] == sum);
++                    REQUIRE(jit.Cpsr() == (flags | 0x000001d0));
++                }
++            }
++        }
++    }
++}
++
+ TEST_CASE("arm: Opt Failure: Const folding in MostSignificantWord", "[arm][A32]") {
+     // This was a randomized test-case that was failing.
+     // This was due to constant folding for MostSignificantWord
