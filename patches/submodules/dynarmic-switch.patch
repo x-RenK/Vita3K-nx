@@ -979,3 +979,58 @@ index 48136758..c4bd35c9 100644
  };
  
  }  // namespace Dynarmic
+diff --git a/src/dynarmic/ir/opt/constant_propagation_pass.cpp b/src/dynarmic/ir/opt/constant_propagation_pass.cpp
+index 83ed8499..81df6d66 100644
+--- a/src/dynarmic/ir/opt/constant_propagation_pass.cpp
++++ b/src/dynarmic/ir/opt/constant_propagation_pass.cpp
+@@ -96,7 +96,7 @@ void FoldAdd(IR::Inst& inst, bool is_32_bit) {
+         const IR::Inst* lhs_inst = lhs.GetInstRecursive();
+         if (lhs_inst->GetOpcode() == inst.GetOpcode() && lhs_inst->GetArg(1).IsImmediate() && lhs_inst->GetArg(2).IsImmediate()) {
+             const u64 combined = rhs.GetImmediateAsU64() + lhs_inst->GetArg(1).GetImmediateAsU64() + lhs_inst->GetArg(2).GetU1();
+-            if (combined == 0) {
++            if (combined == 0 && carry.IsZero()) {
+                 inst.ReplaceUsesWith(lhs_inst->GetArg(0));
+                 return;
+             }
+diff --git a/tests/A32/test_thumb_instructions.cpp b/tests/A32/test_thumb_instructions.cpp
+index dda0fc46..667776ab 100644
+--- a/tests/A32/test_thumb_instructions.cpp
++++ b/tests/A32/test_thumb_instructions.cpp
+@@ -15,6 +15,37 @@ static Dynarmic::A32::UserConfig GetUserConfig(ThumbTestEnv* testenv) {
+     return user_config;
+ }
+ 
++TEST_CASE("thumb: preserve carry when folding chained additions", "[thumb]") {
++    for (u32 low : {0u, 0xFFFFFFFFu}) {
++        for (u32 high : {0u, 0x12345678u, 0xFFFFFFFFu}) {
++            ThumbTestEnv test_env;
++            test_env.code_mem = {
++                0x1C0B,  // adds r3, r1, #0
++                0x2100,  // movs r1, #0
++                0x1C02,  // adds r2, r0, #0
++                0x1C0F,  // adds r7, r1, #0
++                0x18B6,  // adds r6, r6, r2
++                0x415F,  // adcs r7, r3
++                0x1C3A,  // adds r2, r7, #0
++                0xE7FE,  // b +#0
++            };
++            Dynarmic::A32::Jit jit{GetUserConfig(&test_env)};
++            jit.Regs()[0] = 1;
++            jit.Regs()[1] = high;
++            jit.Regs()[6] = low;
++            jit.SetCpsr(0x30);
++            test_env.ticks_left = 7;
++            jit.Run();
++
++            const u64 expected = ((u64{high} << 32) | low) + 1;
++            REQUIRE(jit.Regs()[6] == static_cast<u32>(expected));
++            REQUIRE(jit.Regs()[7] == static_cast<u32>(expected >> 32));
++            REQUIRE(jit.Regs()[2] == static_cast<u32>(expected >> 32));
++            REQUIRE(jit.Regs()[15] == 14);
++        }
++    }
++}
++
+ TEST_CASE("thumb: lsls r0, r1, #2", "[thumb]") {
+     ThumbTestEnv test_env;
+     Dynarmic::A32::Jit jit{GetUserConfig(&test_env)};
