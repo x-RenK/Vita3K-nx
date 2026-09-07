@@ -1035,7 +1035,7 @@ index dda0fc46..667776ab 100644
      ThumbTestEnv test_env;
      Dynarmic::A32::Jit jit{GetUserConfig(&test_env)};
 diff --git a/src/dynarmic/backend/arm64/emit_arm64.cpp b/src/dynarmic/backend/arm64/emit_arm64.cpp
-index 1ecb5424..a1500e00 100644
+index 1ecb5424d..4f2187f9a 100644
 --- a/src/dynarmic/backend/arm64/emit_arm64.cpp
 +++ b/src/dynarmic/backend/arm64/emit_arm64.cpp
 @@ -191,6 +191,55 @@ static void EmitAddCycles(oaknut::CodeGenerator& code, EmitContext& ctx, size_t
@@ -1094,9 +1094,12 @@ index 1ecb5424..a1500e00 100644
  EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const EmitConfig& conf, FastmemManager& fastmem_manager) {
      if (conf.very_verbose_debugging_output) {
          std::puts(IR::DumpBlock(block).c_str());
-@@ -201,6 +250,9 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
+@@ -199,8 +248,11 @@ EmittedBlockInfo EmitArm64(oaknut::CodeGenerator& code, IR::Block block, const E
+     EmittedBlockInfo ebi;
+ 
      FpsrManager fpsr_manager{code, conf.state_fpsr_offset};
-     RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER};
+-    RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER};
++    RegAlloc reg_alloc{code, fpsr_manager, GPR_ORDER, FPR_ORDER, conf.HasOptimization(OptimizationFlag::MiscIROpt)};
      EmitContext ctx{block, reg_alloc, conf, ebi, fpsr_manager, fastmem_manager, {}};
 +    const auto multiply_adds = conf.HasOptimization(OptimizationFlag::MiscIROpt)
 +                                 ? FindMultiplyAdds(block)
@@ -1138,7 +1141,7 @@ index 1ecb5424..a1500e00 100644
  
          reg_alloc.UpdateAllUses();
 diff --git a/src/dynarmic/backend/arm64/reg_alloc.cpp b/src/dynarmic/backend/arm64/reg_alloc.cpp
-index fedee02f..8542acfa 100644
+index fedee02f..95d1823d 100644
 --- a/src/dynarmic/backend/arm64/reg_alloc.cpp
 +++ b/src/dynarmic/backend/arm64/reg_alloc.cpp
 @@ -130,16 +130,21 @@ void HostLocInfo::UpdateUses() {
@@ -1169,26 +1172,178 @@ index fedee02f..8542acfa 100644
  bool RegAlloc::WasValueDefined(IR::Inst* inst) const {
      return defined_insts.count(inst) > 0;
  }
+@@ -397,19 +402,31 @@ int RegAlloc::RealizeWriteImpl(const IR::Inst* value) {
+ }
+ 
+ template<HostLoc::Kind kind>
+-int RegAlloc::RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value) {
++std::pair<int, bool> RegAlloc::RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value) {
+     defined_insts.insert(write_value);
+-
+-    // TODO: Move elimination
++    ASSERT(!ValueLocation(write_value));
++
++    if (kind != HostLoc::Kind::Flags && enable_register_reuse && !read_value.IsImmediate()) {
++        const auto location = ValueLocation(read_value.GetInst());
++        ASSERT(location);
++        auto& info = ValueInfo(*location);
++        if (location->kind == kind && info.IsOneRemainingUse() && info.locked == 1 && !info.realized) {
++            // Retire the input and its lock before assigning the register to the output.
++            info.locked = 0;
++            info.UpdateUses();
++            info.SetupLocation(write_value);
++            return {location->index, true};
++        }
++    }
+ 
+     const int write_loc = RealizeWriteImpl<kind>(write_value);
+ 
+     if constexpr (kind == HostLoc::Kind::Gpr) {
+         LoadCopyInto(read_value, oaknut::XReg{write_loc});
+-        return write_loc;
++        return {write_loc, false};
+     } else if constexpr (kind == HostLoc::Kind::Fpr) {
+         LoadCopyInto(read_value, oaknut::QReg{write_loc});
+-        return write_loc;
++        return {write_loc, false};
+     } else if constexpr (kind == HostLoc::Kind::Flags) {
+         ASSERT_FALSE("Incorrect function for ReadWrite of flags");
+     } else {
+@@ -423,9 +440,9 @@ template int RegAlloc::RealizeReadImpl<HostLoc::Kind::Flags>(const IR::Value& va
+ template int RegAlloc::RealizeWriteImpl<HostLoc::Kind::Gpr>(const IR::Inst* value);
+ template int RegAlloc::RealizeWriteImpl<HostLoc::Kind::Fpr>(const IR::Inst* value);
+ template int RegAlloc::RealizeWriteImpl<HostLoc::Kind::Flags>(const IR::Inst* value);
+-template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Gpr>(const IR::Value&, const IR::Inst*);
+-template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Fpr>(const IR::Value&, const IR::Inst*);
+-template int RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Flags>(const IR::Value&, const IR::Inst*);
++template std::pair<int, bool> RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Gpr>(const IR::Value&, const IR::Inst*);
++template std::pair<int, bool> RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Fpr>(const IR::Value&, const IR::Inst*);
++template std::pair<int, bool> RegAlloc::RealizeReadWriteImpl<HostLoc::Kind::Flags>(const IR::Value&, const IR::Inst*);
+ 
+ int RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, const std::vector<int>& order) const {
+     const auto empty = std::find_if(order.begin(), order.end(), [&](int i) { return regs[i].IsCompletelyEmpty(); });
 diff --git a/src/dynarmic/backend/arm64/reg_alloc.h b/src/dynarmic/backend/arm64/reg_alloc.h
-index 3a2d5388..95300214 100644
+index 3a2d5388..c737c121 100644
 --- a/src/dynarmic/backend/arm64/reg_alloc.h
 +++ b/src/dynarmic/backend/arm64/reg_alloc.h
-@@ -161,6 +161,7 @@ public:
-             : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, rand_gen{std::random_device{}()} {}
+@@ -157,10 +157,11 @@ class RegAlloc final {
+ public:
+     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
+ 
+-    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order)
+-            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, rand_gen{std::random_device{}()} {}
++    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order, bool enable_register_reuse)
++            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, enable_register_reuse{enable_register_reuse}, rand_gen{std::random_device{}()} {}
  
      ArgumentInfo GetArgumentInfo(IR::Inst* inst);
 +    Argument GetArgument(IR::Value value);
      bool WasValueDefined(IR::Inst* inst) const;
  
      auto ReadX(Argument& arg) { return RAReg<oaknut::XReg>{*this, RWType::Read, arg.value, nullptr}; }
+@@ -309,7 +310,7 @@ private:
+     template<HostLoc::Kind kind>
+     int RealizeWriteImpl(const IR::Inst* value);
+     template<HostLoc::Kind kind>
+-    int RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value);
++    std::pair<int, bool> RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value);
+ 
+     int AllocateRegister(const std::array<HostLocInfo, 32>& regs, const std::vector<int>& order) const;
+     void SpillGpr(int index);
+@@ -327,6 +328,7 @@ private:
+     FpsrManager& fpsr_manager;
+     std::vector<int> gpr_order;
+     std::vector<int> fpr_order;
++    bool enable_register_reuse;
+ 
+     std::array<HostLocInfo, 32> gprs;
+     std::array<HostLocInfo, 32> fprs;
+@@ -365,9 +367,14 @@ void RAReg<T>::Realize() {
+     case RWType::Write:
+         reg = T{reg_alloc.RealizeWriteImpl<kind>(write_value)};
+         break;
+-    case RWType::ReadWrite:
+-        reg = T{reg_alloc.RealizeReadWriteImpl<kind>(read_value, write_value)};
++    case RWType::ReadWrite: {
++        const auto [index, reused] = reg_alloc.RealizeReadWriteImpl<kind>(read_value, write_value);
++        reg = T{index};
++        if (reused) {
++            rw = RWType::Write;
++        }
+         break;
++    }
+     default:
+         ASSERT_FALSE("Invalid RWType");
+     }
 diff --git a/tests/A32/test_arm_instructions.cpp b/tests/A32/test_arm_instructions.cpp
-index 3232f1a8..a411f43e 100644
+index 3232f1a8..aacb7e62 100644
 --- a/tests/A32/test_arm_instructions.cpp
 +++ b/tests/A32/test_arm_instructions.cpp
-@@ -18,6 +18,62 @@ static A32::UserConfig GetUserConfig(ArmTestEnv* testenv) {
+@@ -3,6 +3,8 @@
+  * SPDX-License-Identifier: 0BSD
+  */
+ 
++#include <algorithm>
++
+ #include <catch2/catch_test_macros.hpp>
+ 
+ #include "./testenv.h"
+@@ -18,6 +20,115 @@ static A32::UserConfig GetUserConfig(ArmTestEnv* testenv) {
      return user_config;
  }
  
++TEST_CASE("arm: Vector updates preserve shared register values", "[arm][A32]") {
++    for (const bool reuse : {false, true}) {
++        ArmTestEnv test_env;
++        auto config = GetUserConfig(&test_env);
++        if (!reuse) {
++            config.optimizations &= ~OptimizationFlag::MiscIROpt;
++        }
++        A32::Jit jit{config};
++        test_env.code_mem = {
++            0xf2202150,  // vmov q1, q0
++            0xee200b10,  // vmov.32 d0[1], r0
++            0xee001b10,  // vmov.32 d0[0], r1
++            0xf3b20944,  // vtbx.8 d0, {d2, d3}, d4
++            0xee2a2b10,  // vmov.32 d10[1], r2
++            0xf222c152,  // vmov q6, q1
++            0xeafffffe,  // b .
++        };
++        for (u32 seed = 0; seed < 256; ++seed) {
++            std::array<u32, 64> initial;
++            for (size_t i = 0; i < initial.size(); ++i) {
++                initial[i] = u32(i + 1) * 0x01020304 ^ seed;
++            }
++            auto expected = initial;
++            std::copy_n(initial.begin(), 4, expected.begin() + 4);
++            std::copy_n(initial.begin(), 4, expected.begin() + 24);
++            expected[0] = seed * 0x76543210;
++            expected[1] = seed * 0x10203041;
++            expected[21] = seed * 0xfedcba98;
++            std::array<u8, 16> table;
++            std::array<u8, 8> indices, result;
++            std::memcpy(table.data(), initial.data(), table.size());
++            std::memcpy(indices.data(), initial.data() + 8, indices.size());
++            std::memcpy(result.data(), expected.data(), result.size());
++            for (size_t i = 0; i < result.size(); ++i) {
++                if (indices[i] < table.size()) {
++                    result[i] = table[indices[i]];
++                }
++            }
++            std::memcpy(expected.data(), result.data(), result.size());
++            jit.Regs() = {};
++            jit.Regs()[0] = seed * 0x10203041;
++            jit.Regs()[1] = seed * 0x76543210;
++            jit.Regs()[2] = seed * 0xfedcba98;
++            jit.ExtRegs() = initial;
++            jit.SetCpsr(0xA00001d0);
++            test_env.ticks_left = 7;
++            jit.Run();
++            REQUIRE(jit.ExtRegs() == expected);
++            REQUIRE(jit.Cpsr() == 0xA00001d0);
++        }
++    }
++}
++
 +TEST_CASE("arm: Multiply accumulation preserves results and flags", "[arm][A32]") {
 +    for (const bool combine : {false, true}) {
 +        ArmTestEnv test_env;
