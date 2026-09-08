@@ -28,6 +28,17 @@ using namespace shader;
 using namespace usse;
 
 spv::Id USSETranslatorVisitor::load(Operand op, const Imm4 dest_mask, const int shift_offset) {
+    if (!m_second_program && op.bank == RegisterBank::OUTPUT && !m_output_accessed) {
+        const int type_size = get_data_type_size(op.type);
+        for (int i = 0; i < 4; ++i) {
+            const auto channel = static_cast<unsigned>(op.swizzle[i]);
+            if ((dest_mask & (1 << i)) && channel < 4 && op.num + shift_offset + (channel * type_size) / 4 == 0) {
+                m_output_read_declared = !m_raw_move && (op.type == DataType::F16 || op.type == DataType::F32);
+                m_output_accessed = true;
+                break;
+            }
+        }
+    }
     return utils::load(m_b, m_spirv_params, m_util_funcs, m_features, op, dest_mask, shift_offset);
 }
 
@@ -39,6 +50,14 @@ void USSETranslatorVisitor::store(Operand dest, spv::Id source, std::uint8_t des
                 continue;
             const uint32_t word = (dest.num + shift_offset + (i * type_size) / 4) & 0xFFFFFF;
             m_vpck_written_bytes.erase((static_cast<uint32_t>(dest.bank) << 24) | word);
+        }
+    }
+    if (dest.bank == RegisterBank::OUTPUT && dest.num + shift_offset == 0 && !m_second_program) {
+        const int type_size = get_data_type_size(dest.type);
+        const std::uint8_t first_word_mask = (type_size >= 4) ? 0b0001 : ((type_size == 2) ? 0b0011 : 0b1111);
+        if (dest_mask & first_word_mask) {
+            m_output_accessed = true;
+            m_output_written_declared = (dest.type == DataType::F16 || dest.type == DataType::F32);
         }
     }
     utils::store(m_b, m_spirv_params, m_util_funcs, m_features, dest, source, dest_mask, shift_offset);

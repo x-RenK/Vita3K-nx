@@ -90,6 +90,18 @@ bool USSETranslatorVisitor::vmov(
     inst.opr.src1.type = move_data_type;
     inst.opr.dest.type = move_data_type;
 
+    // Preserve packed pixel bits that would become NaNs when converted through F16.
+    static const Swizzle4 identity_swizzle = SWIZZLE_CHANNEL_4_DEFAULT;
+    if (move_data_type == DataType::F16 && !is_conditional && m_program.is_native_color()
+        && (inst.opr.dest.bank == RegisterBank::OUTPUT || inst.opr.src1.bank == RegisterBank::OUTPUT)
+        && inst.opr.src1.swizzle == identity_swizzle
+        && (dest_mask == 0b0011 || dest_mask == 0b1100 || dest_mask == 0b1111)) {
+        move_data_type = DataType::F32;
+        inst.opr.src1.type = DataType::F32;
+        inst.opr.dest.type = DataType::F32;
+        dest_mask = (dest_mask == 0b1111) ? 0b0011 : ((dest_mask == 0b0011) ? 0b0001 : 0b0010);
+    }
+
     // TODO: adjust dest mask if needed
     CompareMethod compare_method = CompareMethod::NE_ZERO;
     spv::Op compare_op = spv::OpAny;
@@ -189,7 +201,9 @@ bool USSETranslatorVisitor::vmov(
     LOG_DISASM("{}", disasm_str);
 
     spv::Id source_to_compare_with_0 = spv::NoResult;
+    m_raw_move = !is_conditional;
     spv::Id source_1 = load(inst.opr.src1, dest_mask, src1_repeat_offset);
+    m_raw_move = false;
     spv::Id source_2 = spv::NoResult;
     spv::Id result = spv::NoResult;
 
@@ -276,6 +290,9 @@ bool USSETranslatorVisitor::vmov(
     }
 
     store(inst.opr.dest, result, dest_mask, dest_repeat_offset);
+    // Moves do not establish the output's numeric type.
+    if (inst.opr.dest.bank == RegisterBank::OUTPUT && inst.opr.dest.num + dest_repeat_offset == 0)
+        m_output_written_declared = false;
 
     END_REPEAT()
 

@@ -1073,7 +1073,7 @@ spv::Function *USSERecompiler::compile_program_function() {
 }
 
 void convert_gxp_usse_to_spirv(spv::Builder &b, const SceGxmProgram &program, const FeatureState &features, const SpirvShaderParameters &parameters, utils::SpirvUtilFunctions &utils,
-    spv::Function *begin_hook_func, spv::Function *end_hook_func, const NonDependentTextureQueryCallInfos &queries, const spv::Id render_info_id, spv::Function *spv_func_main, std::vector<spv::Id> &interfaces) {
+    spv::Function *begin_hook_func, const std::function<spv::Function *(bool output_written_declared, bool output_read_declared)> &end_hook, const NonDependentTextureQueryCallInfos &queries, const spv::Id render_info_id, spv::Function *spv_func_main, std::vector<spv::Id> &interfaces) {
     const uint64_t *primary_program = program.primary_program_start();
     const uint64_t primary_program_instr_count = program.primary_program_instr_count;
 
@@ -1093,7 +1093,7 @@ void convert_gxp_usse_to_spirv(spv::Builder &b, const SceGxmProgram &program, co
 
     // Decode and recompile
     // TODO: Reuse this
-    usse::USSERecompiler recomp(b, program, features, parameters, utils, end_hook_func, queries, render_info_id);
+    usse::USSERecompiler recomp(b, program, features, parameters, utils, nullptr, queries, render_info_id);
     recomp.visitor.seed_entry_populated_pa(parameters.frag_input_pa_regs);
 
     for (uint32_t phase = 0; phase < static_cast<uint32_t>(ShaderPhase::Max); ++phase) {
@@ -1113,7 +1113,7 @@ void convert_gxp_usse_to_spirv(spv::Builder &b, const SceGxmProgram &program, co
 
     // We reach the end
     // Call end hook. If it's discard, this is not even called, so no worry
-    b.createFunctionCall(end_hook_func, {});
+    b.createFunctionCall(end_hook(recomp.visitor.is_output_written_in_declared_type(), recomp.visitor.is_output_read_in_declared_type()), {});
 
     if (features.should_use_shader_interlock() && program.is_fragment() && program.is_frag_color_used())
         b.createNoResultOp(spv::OpEndInvocationInterlockEXT);

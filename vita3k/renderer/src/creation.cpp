@@ -32,6 +32,9 @@
 #include <util/log.h>
 #include <util/tracy.h>
 
+#include <algorithm>
+#include <array>
+
 namespace renderer {
 
 static void layout_ssbo_offset_from_uniform_buffer_sizes(UniformBufferSizes &sizes, UniformBufferSizes &offsets, std::size_t &total_hold) {
@@ -177,7 +180,7 @@ COMMAND(handle_memory_unmap) {
 }
 
 // Client
-bool create(std::unique_ptr<FragmentProgram> &fp, State &state, const SceGxmProgram &program, const SceGxmBlendInfo *blend, GXPPtrMap &gxp_ptr_map) {
+bool create(std::unique_ptr<FragmentProgram> &fp, State &state, const SceGxmProgram &program, const SceGxmBlendInfo *blend, GXPPtrMap &gxp_ptr_map, const SceGxmOutputRegisterFormat output_format) {
     switch (state.current_backend) {
     case Backend::OpenGL:
         gl::create(fp, dynamic_cast<gl::GLState &>(state), program, blend);
@@ -194,6 +197,14 @@ bool create(std::unique_ptr<FragmentProgram> &fp, State &state, const SceGxmProg
 
     // Try to hash this shader
     fp->hash = sha256(&program, program.size);
+    fp->output_register_format = output_format;
+    if (program.is_native_color() && output_format != SCE_GXM_OUTPUT_REGISTER_FORMAT_DECLARED) {
+        // Native color translations depend on the requested register format.
+        std::array<uint8_t, sizeof(Sha256Hash) + 1> keyed;
+        std::copy(fp->hash.begin(), fp->hash.end(), keyed.begin());
+        keyed.back() = static_cast<uint8_t>(output_format);
+        fp->hash = sha256(keyed.data(), keyed.size());
+    }
     gxp_ptr_map.emplace(fp->hash, &program);
 
     fp->buffer_count = shader::usse::get_uniform_buffer_sizes(program, fp->uniform_buffer_sizes);

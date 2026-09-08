@@ -1104,6 +1104,7 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
     const vk::RenderPass render_pass = use_shader_interlock ? context.current_shader_interlock_pass : context.current_render_pass;
     // update the shader hints
     context.shader_hints.color_format = record.color_surface.colorFormat;
+    context.shader_hints.output_register_format = fragment_program.output_register_format;
     context.shader_hints.attributes = &vertex_program_gxm.attributes;
 
     // note: the flag can_use_deferred_compilation is not considered here because it causes way too many false positives

@@ -210,6 +210,12 @@ private:
 
     bool m_second_program{ false };
 
+    // Track the first read and last write of o0's first word separately.
+    bool m_output_written_declared{ false };
+    bool m_output_accessed{ false };
+    bool m_output_read_declared{ false };
+    bool m_raw_move{ false };
+
     // Bytes already filled by VPCK, keyed by register bank and word.
     std::map<std::uint32_t, std::uint8_t> m_vpck_written_bytes;
     bool m_store_from_vpck{ false };
@@ -223,6 +229,14 @@ public:
 
     bool is_translating_secondary_program() {
         return m_second_program;
+    }
+
+    bool is_output_written_in_declared_type() const {
+        return m_output_written_declared;
+    }
+
+    bool is_output_read_in_declared_type() const {
+        return m_output_read_declared;
     }
 
     // Instructions start

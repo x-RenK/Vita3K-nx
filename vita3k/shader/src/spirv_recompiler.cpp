@@ -117,10 +117,38 @@ struct TranslationState {
     bool is_vulkan = false;
     spv::ImageFormat image_storage_format = spv::ImageFormat::ImageFormatUnknown;
     const Hints *hints = nullptr;
+    bool native_output_declared = false;
+    bool native_input_declared = false;
+    spv::Block *frag_color_load_block = nullptr;
 };
 
 static bool is_u8_alpha_color_surface(const TranslationState &state) {
     return state.hints->color_format == SCE_GXM_COLOR_FORMAT_U8_A;
+}
+
+// Framebuffer reads and final color writes can use different register encodings.
+static SceGxmParameterType get_fragment_output_type(const SceGxmProgram &program, const TranslationState &state, const bool output) {
+    if (!program.is_native_color() || (output ? state.native_output_declared : state.native_input_declared))
+        return program.get_fragment_output_type();
+
+    switch (state.hints->output_register_format) {
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4:
+        return SCE_GXM_PARAMETER_TYPE_U8;
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_CHAR4:
+        return SCE_GXM_PARAMETER_TYPE_S8;
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_USHORT2:
+        return SCE_GXM_PARAMETER_TYPE_U16;
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_SHORT2:
+        return SCE_GXM_PARAMETER_TYPE_S16;
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4:
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF2:
+        return SCE_GXM_PARAMETER_TYPE_F16;
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_FLOAT2:
+    case SCE_GXM_OUTPUT_REGISTER_FORMAT_FLOAT:
+        return SCE_GXM_PARAMETER_TYPE_F32;
+    default:
+        return program.get_fragment_output_type();
+    }
 }
 
 static spv::Id alpha_surface_to_shader_color(spv::Builder &b, const spv::Id color) {
@@ -423,6 +451,176 @@ static spv::Id srgb_decode_rgb(spv::Builder &b, utils::SpirvUtilFunctions &utils
     const spv::Id cond = b.createBinOp(spv::OpFOrdLessThanEqual, bv3, rgb,
         utils::make_uniform_vector_from_type(b, v3, 0.04045f));
     return b.createTriOp(spv::OpSelect, v3, cond, lo, hi);
+}
+
+static void create_fragment_color_load(spv::Builder &b, SpirvShaderParameters &parameters, utils::SpirvUtilFunctions &utils,
+    const FeatureState &features, TranslationState &translation_state, const SceGxmProgram &program) {
+    const auto last_build_point = b.getBuildPoint();
+    b.setBuildPoint(translation_state.frag_color_load_block);
+    const auto f32 = b.makeFloatType(32);
+    const auto v4 = b.makeVectorType(f32, 4);
+    auto current_coord = translation_state.frag_coord_id;
+    const auto vertex_varyings_ptr = program.vertex_varyings();
+    // There might be a chance that this shader also reads from OUTPUT bank. We will load last state frag data
+    spv::Id source = spv::NoResult;
+
+    Operand target_to_store;
+
+    target_to_store.bank = RegisterBank::OUTPUT;
+    target_to_store.num = 0;
+    target_to_store.type = std::get<0>(shader::get_parameter_type_store_and_name(get_fragment_output_type(program, translation_state, false)));
+
+    // see frag_finalize for the following cases
+    if (target_to_store.type == DataType::INT32 || target_to_store.type == DataType::UINT32)
+        target_to_store.type = DataType::F32;
+
+    if (gxm::get_base_format(translation_state.hints->color_format) == SCE_GXM_COLOR_BASE_FORMAT_F32F32 && vertex_varyings_ptr->output_comp_count > 2) {
+        if (target_to_store.type == DataType::F16)
+            target_to_store.type = DataType::F32;
+    }
+
+    spv::Decoration precision = get_data_type_size(target_to_store.type) < 4 && !features.force_full_precision ? spv::DecorationRelaxedPrecision : spv::NoPrecision;
+    if (target_to_store.type == DataType::INT16 || target_to_store.type == DataType::UINT16)
+        // a F16 cannot hold a INT16 or UINT16
+        precision = spv::NoPrecision;
+
+    auto store_source_result = [&](const bool direct_store = false) {
+        if (source != spv::NoResult) {
+            if (is_u8_alpha_color_surface(translation_state))
+                source = alpha_surface_to_shader_color(b, source);
+
+            if (!direct_store && !is_float_data_type(target_to_store.type)) {
+                source = utils::convert_to_int(b, utils, source, target_to_store.type, true);
+            }
+
+            utils::store(b, parameters, utils, features, target_to_store, source, 0b1111, 0);
+        }
+    };
+
+    if (features.direct_fragcolor && (translation_state.is_vulkan || translation_state.is_target_glsl)) {
+        // The GPU supports gl_LastFragData.
+        // On Vulkan this is a subpass input, it is similar to gl_LastFragData (and should have the same speed on integrated GPUs)
+        // This is not supported on OpenGL with SpirV
+        const spv::Id image_type = b.makeImageType(f32, spv::DimSubpassData, false, false, false, 2, spv::ImageFormatUnknown);
+        const spv::Id last_frag_data = b.createVariable(precision, spv::StorageClassUniformConstant, image_type, "last_frag_data");
+        b.addDecoration(last_frag_data, spv::DecorationInputAttachmentIndex, 0);
+        if (translation_state.is_vulkan) {
+            b.addDecoration(last_frag_data, spv::DecorationBinding, 0);
+            b.addDecoration(last_frag_data, spv::DecorationDescriptorSet, 1);
+        }
+
+        // we must read from the image at coordinates (0,0) (offset from the current pixel) to get the last pixel value
+        spv::Id coord_0 = b.makeIntConstant(0);
+        const spv::Id ivec2 = b.makeVectorType(b.makeIntType(32), 2);
+        coord_0 = b.makeCompositeConstant(ivec2, { coord_0, coord_0 });
+        source = b.createOp(spv::OpImageRead, v4, { b.createLoad(last_frag_data, spv::NoPrecision), coord_0 });
+        b.setPrecision(source, precision);
+
+        translation_state.last_frag_data_id = last_frag_data;
+    } else if (features.support_shader_interlock || features.support_texture_barrier) {
+        // Create a global sampler, which is our color attachment
+        spv::Id color_attachment = create_builtin_sampler(b, features, translation_state, "f_colorAttachment");
+        b.addDecoration(color_attachment, spv::DecorationCoherent);
+        b.setPrecision(color_attachment, precision);
+        spv::Id color_attachment_raw = spv::NoResult;
+
+        if (translation_state.is_vulkan) {
+            b.addDecoration(color_attachment, spv::DecorationBinding, 0);
+            b.addDecoration(color_attachment, spv::DecorationDescriptorSet, 1);
+        } else {
+            b.addDecoration(color_attachment, spv::DecorationBinding, COLOR_ATTACHMENT_TEXTURE_SLOT_IMAGE);
+        }
+        translation_state.color_attachment_id = color_attachment;
+
+        spv::Id i32 = b.makeIntegerType(32, true);
+        current_coord = b.createUnaryOp(spv::OpConvertFToS, b.makeVectorType(i32, 4), b.createLoad(current_coord, spv::NoPrecision));
+        current_coord = b.createOp(spv::OpVectorShuffle, b.makeVectorType(i32, 2), { { true, current_coord }, { true, current_coord }, { false, 0 }, { false, 1 } });
+
+        if (features.preserve_f16_nan_as_u16) {
+            spv::Id uiv4 = b.makeVectorType(b.makeUintType(32), 4);
+
+            color_attachment_raw = create_builtin_sampler_for_raw(b, features, translation_state, "f_colorAttachment_rawUI");
+            // Read back through the same image the shader writes.
+            b.addDecoration(color_attachment_raw, spv::DecorationCoherent);
+            if (translation_state.is_vulkan) {
+                b.addDecoration(color_attachment_raw, spv::DecorationBinding, 2);
+                b.addDecoration(color_attachment_raw, spv::DecorationDescriptorSet, 1);
+            } else {
+                b.addDecoration(color_attachment_raw, spv::DecorationBinding, COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE);
+            }
+            translation_state.color_attachment_raw_id = color_attachment_raw;
+
+            const spv::Id load_normal_ptr = utils::create_access_chain(b, spv::StorageClassUniform,
+                translation_state.render_info_id, { b.makeIntConstant(FRAG_UNIFORM_use_raw_image) });
+            const spv::Id load_normal_cond = b.createBinOp(spv::OpFOrdLessThan, b.makeBoolType(),
+                b.createLoad(load_normal_ptr, spv::NoPrecision), b.makeFloatConstant(0.5f));
+            spv::Builder::If cond_builder(load_normal_cond, spv::SelectionControlMaskNone, b);
+
+            source = b.createOp(spv::OpImageRead, v4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
+            if (translation_state.is_vulkan) {
+                const spv::Id old_source = source;
+                spv::Builder::If srgb_cond_builder(parameters.is_srgb_constant, spv::SelectionControlMaskNone, b);
+
+                const spv::Id v3 = b.makeVectorType(f32, 3);
+                spv::Id rgb = b.createOp(spv::OpVectorShuffle, v3,
+                    { { true, source }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 } });
+                rgb = srgb_decode_rgb(b, utils, rgb);
+                source = b.createOp(spv::OpVectorShuffle, v4,
+                    { { true, rgb }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 }, { false, 6 } });
+                store_source_result();
+
+                srgb_cond_builder.makeBeginElse();
+                source = old_source;
+                store_source_result();
+                srgb_cond_builder.makeEndIf();
+            } else {
+                store_source_result();
+            }
+            cond_builder.makeBeginElse();
+            color_attachment = color_attachment_raw;
+            source = b.createOp(spv::OpImageRead, uiv4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
+            target_to_store.type = DataType::UINT16;
+            store_source_result(true);
+            cond_builder.makeEndIf();
+
+            // Generated here already, so empty it out to prevent further gen
+            source = spv::NoResult;
+        } else {
+            source = b.createOp(spv::OpImageRead, v4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
+            b.setPrecision(source, precision);
+
+            if (translation_state.is_vulkan) {
+                const spv::Id old_source = source;
+                // if (is_srgb)
+                spv::Builder::If cond_builder(parameters.is_srgb_constant, spv::SelectionControlMaskNone, b);
+
+                const spv::Id v3 = b.makeVectorType(f32, 3);
+                spv::Id rgb = b.createOp(spv::OpVectorShuffle, v3, { { true, source }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 } });
+                rgb = srgb_decode_rgb(b, utils, rgb);
+                b.setPrecision(rgb, precision);
+                source = b.createOp(spv::OpVectorShuffle, v4, { { true, rgb }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 }, { false, 6 } });
+
+                store_source_result();
+
+                // else (no shader gamma correction, nothing to do)
+                cond_builder.makeBeginElse();
+                source = old_source;
+                store_source_result();
+                cond_builder.makeEndIf();
+                source = 0;
+            }
+        }
+    } else {
+        // Try to initialize outs[0] to some nice value. In case the GPU has garbage data for our shader
+        spv::Id v4 = b.makeVectorType(b.makeFloatType(32), 4);
+        spv::Id rezero = b.makeFloatConstant(0.0f);
+        source = b.makeCompositeConstant(v4, { rezero, rezero, rezero, rezero });
+    }
+
+    store_source_result();
+
+    b.makeReturn(false);
+    b.setBuildPoint(last_build_point);
 }
 
 static void create_fragment_inputs(spv::Builder &b, SpirvShaderParameters &parameters, utils::SpirvUtilFunctions &utils, const FeatureState &features, TranslationState &translation_state, NonDependentTextureQueryCallInfos &tex_query_infos, SamplerMap &samplers,
@@ -769,163 +967,12 @@ static void create_fragment_inputs(spv::Builder &b, SpirvShaderParameters &param
     }
 
     if (program.is_frag_color_used()) {
-        // There might be a chance that this shader also reads from OUTPUT bank. We will load last state frag data
-        spv::Id source = spv::NoResult;
-
-        Operand target_to_store;
-
-        target_to_store.bank = RegisterBank::OUTPUT;
-        target_to_store.num = 0;
-        target_to_store.type = std::get<0>(shader::get_parameter_type_store_and_name(program.get_fragment_output_type()));
-
-        // see frag_finalize for the following cases
-        if (target_to_store.type == DataType::INT32 || target_to_store.type == DataType::UINT32)
-            target_to_store.type = DataType::F32;
-
-        if (gxm::get_base_format(translation_state.hints->color_format) == SCE_GXM_COLOR_BASE_FORMAT_F32F32 && vertex_varyings_ptr->output_comp_count > 2) {
-            if (target_to_store.type == DataType::F16)
-                target_to_store.type = DataType::F32;
-        }
-
-        spv::Decoration precision = get_data_type_size(target_to_store.type) < 4 && !features.force_full_precision ? spv::DecorationRelaxedPrecision : spv::NoPrecision;
-        if (target_to_store.type == DataType::INT16 || target_to_store.type == DataType::UINT16)
-            // a F16 cannot hold a INT16 or UINT16
-            precision = spv::NoPrecision;
-
-        auto store_source_result = [&](const bool direct_store = false) {
-            if (source != spv::NoResult) {
-                if (is_u8_alpha_color_surface(translation_state))
-                    source = alpha_surface_to_shader_color(b, source);
-
-                if (!direct_store && !is_float_data_type(target_to_store.type)) {
-                    source = utils::convert_to_int(b, utils, source, target_to_store.type, true);
-                }
-
-                utils::store(b, parameters, utils, features, target_to_store, source, 0b1111, 0);
-            }
-        };
-
-        if (features.direct_fragcolor && (translation_state.is_vulkan || translation_state.is_target_glsl)) {
-            // The GPU supports gl_LastFragData.
-            // On Vulkan this is a subpass input, it is similar to gl_LastFragData (and should have the same speed on integrated GPUs)
-            // This is not supported on OpenGL with SpirV
-            const spv::Id image_type = b.makeImageType(f32, spv::DimSubpassData, false, false, false, 2, spv::ImageFormatUnknown);
-            const spv::Id last_frag_data = b.createVariable(precision, spv::StorageClassUniformConstant, image_type, "last_frag_data");
-            b.addDecoration(last_frag_data, spv::DecorationInputAttachmentIndex, 0);
-            if (translation_state.is_vulkan) {
-                b.addDecoration(last_frag_data, spv::DecorationBinding, 0);
-                b.addDecoration(last_frag_data, spv::DecorationDescriptorSet, 1);
-            }
-
-            // we must read from the image at coordinates (0,0) (offset from the current pixel) to get the last pixel value
-            spv::Id coord_0 = b.makeIntConstant(0);
-            const spv::Id ivec2 = b.makeVectorType(b.makeIntType(32), 2);
-            coord_0 = b.makeCompositeConstant(ivec2, { coord_0, coord_0 });
-            source = b.createOp(spv::OpImageRead, v4, { b.createLoad(last_frag_data, spv::NoPrecision), coord_0 });
-            b.setPrecision(source, precision);
-
-            translation_state.last_frag_data_id = last_frag_data;
-        } else if (features.support_shader_interlock || features.support_texture_barrier) {
-            // Create a global sampler, which is our color attachment
-            spv::Id color_attachment = create_builtin_sampler(b, features, translation_state, "f_colorAttachment");
-            b.addDecoration(color_attachment, spv::DecorationCoherent);
-            b.setPrecision(color_attachment, precision);
-            spv::Id color_attachment_raw = spv::NoResult;
-
-            if (translation_state.is_vulkan) {
-                b.addDecoration(color_attachment, spv::DecorationBinding, 0);
-                b.addDecoration(color_attachment, spv::DecorationDescriptorSet, 1);
-            } else {
-                b.addDecoration(color_attachment, spv::DecorationBinding, COLOR_ATTACHMENT_TEXTURE_SLOT_IMAGE);
-            }
-            translation_state.color_attachment_id = color_attachment;
-
-            spv::Id i32 = b.makeIntegerType(32, true);
-            current_coord = b.createUnaryOp(spv::OpConvertFToS, b.makeVectorType(i32, 4), b.createLoad(current_coord, spv::NoPrecision));
-            current_coord = b.createOp(spv::OpVectorShuffle, b.makeVectorType(i32, 2), { { true, current_coord }, { true, current_coord }, { false, 0 }, { false, 1 } });
-
-            if (features.preserve_f16_nan_as_u16) {
-                spv::Id uiv4 = b.makeVectorType(b.makeUintType(32), 4);
-
-                color_attachment_raw = create_builtin_sampler_for_raw(b, features, translation_state, "f_colorAttachment_rawUI");
-                // Read back through the same image the shader writes.
-                b.addDecoration(color_attachment_raw, spv::DecorationCoherent);
-                if (translation_state.is_vulkan) {
-                    b.addDecoration(color_attachment_raw, spv::DecorationBinding, 2);
-                    b.addDecoration(color_attachment_raw, spv::DecorationDescriptorSet, 1);
-                } else {
-                    b.addDecoration(color_attachment_raw, spv::DecorationBinding, COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE);
-                }
-                translation_state.color_attachment_raw_id = color_attachment_raw;
-
-                const spv::Id load_normal_ptr = utils::create_access_chain(b, spv::StorageClassUniform,
-                    translation_state.render_info_id, { b.makeIntConstant(FRAG_UNIFORM_use_raw_image) });
-                const spv::Id load_normal_cond = b.createBinOp(spv::OpFOrdLessThan, b.makeBoolType(),
-                    b.createLoad(load_normal_ptr, spv::NoPrecision), b.makeFloatConstant(0.5f));
-                spv::Builder::If cond_builder(load_normal_cond, spv::SelectionControlMaskNone, b);
-
-                source = b.createOp(spv::OpImageRead, v4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
-                if (translation_state.is_vulkan) {
-                    const spv::Id old_source = source;
-                    spv::Builder::If srgb_cond_builder(parameters.is_srgb_constant, spv::SelectionControlMaskNone, b);
-
-                    const spv::Id v3 = b.makeVectorType(f32, 3);
-                    spv::Id rgb = b.createOp(spv::OpVectorShuffle, v3,
-                        { { true, source }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 } });
-                    rgb = srgb_decode_rgb(b, utils, rgb);
-                    source = b.createOp(spv::OpVectorShuffle, v4,
-                        { { true, rgb }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 }, { false, 6 } });
-                    store_source_result();
-
-                    srgb_cond_builder.makeBeginElse();
-                    source = old_source;
-                    store_source_result();
-                    srgb_cond_builder.makeEndIf();
-                } else {
-                    store_source_result();
-                }
-                cond_builder.makeBeginElse();
-                color_attachment = color_attachment_raw;
-                source = b.createOp(spv::OpImageRead, uiv4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
-                target_to_store.type = DataType::UINT16;
-                store_source_result(true);
-                cond_builder.makeEndIf();
-
-                // Generated here already, so empty it out to prevent further gen
-                source = spv::NoResult;
-            } else {
-                source = b.createOp(spv::OpImageRead, v4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
-                b.setPrecision(source, precision);
-
-                if (translation_state.is_vulkan) {
-                    const spv::Id old_source = source;
-                    // if (is_srgb)
-                    spv::Builder::If cond_builder(parameters.is_srgb_constant, spv::SelectionControlMaskNone, b);
-
-                    const spv::Id v3 = b.makeVectorType(f32, 3);
-                    spv::Id rgb = b.createOp(spv::OpVectorShuffle, v3, { { true, source }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 } });
-                    rgb = srgb_decode_rgb(b, utils, rgb);
-                    b.setPrecision(rgb, precision);
-                    source = b.createOp(spv::OpVectorShuffle, v4, { { true, rgb }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 }, { false, 6 } });
-
-                    store_source_result();
-
-                    // else (no shader gamma correction, nothing to do)
-                    cond_builder.makeBeginElse();
-                    source = old_source;
-                    store_source_result();
-                    cond_builder.makeEndIf();
-                    source = 0;
-                }
-            }
-        } else {
-            // Try to initialize outs[0] to some nice value. In case the GPU has garbage data for our shader
-            spv::Id v4 = b.makeVectorType(b.makeFloatType(32), 4);
-            spv::Id rezero = b.makeFloatConstant(0.0f);
-            source = b.makeCompositeConstant(v4, { rezero, rezero, rezero, rezero });
-        }
-
-        store_source_result();
+        // Emit the preload after translation reveals how the program reads o0.
+        const auto last_build_point = b.getBuildPoint();
+        const auto load = b.makeFunctionEntry(spv::NoPrecision, b.makeVoidType(), "frag_color_load", {}, {}, {},
+            &translation_state.frag_color_load_block);
+        b.setBuildPoint(last_build_point);
+        b.createFunctionCall(load, {});
     }
 
     parameters.frag_input_pa_regs = pa_offset;
@@ -1581,10 +1628,10 @@ static SpirvShaderParameters create_parameters(spv::Builder &b, const SceGxmProg
 }
 
 static void generate_shader_body(spv::Builder &b, const SpirvShaderParameters &parameters, const SceGxmProgram &program,
-    const FeatureState &features, utils::SpirvUtilFunctions &utils, spv::Function *begin_hook_func, spv::Function *end_hook_func,
+    const FeatureState &features, utils::SpirvUtilFunctions &utils, spv::Function *begin_hook_func, const std::function<spv::Function *(bool, bool)> &end_hook,
     const NonDependentTextureQueryCallInfos &texture_queries, const spv::Id render_info_id, spv::Function *spv_func_main, std::vector<spv::Id> &interfaces) {
     // Do texture queries
-    usse::convert_gxp_usse_to_spirv(b, program, features, parameters, utils, begin_hook_func, end_hook_func, texture_queries, render_info_id, spv_func_main, interfaces);
+    usse::convert_gxp_usse_to_spirv(b, program, features, parameters, utils, begin_hook_func, end_hook, texture_queries, render_info_id, spv_func_main, interfaces);
 }
 
 static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvShaderParameters &parameters,
@@ -1598,7 +1645,7 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
         spv::NoPrecision, b.makeVoidType(), "frag_output_finalize", {}, {},
         decorations, &frag_fin_block);
 
-    const SceGxmParameterType param_type = program.get_fragment_output_type();
+    const SceGxmParameterType param_type = get_fragment_output_type(program, translate_state, true);
     auto vertex_varyings_ptr = program.vertex_varyings();
 
     Operand color_val_operand;
@@ -2066,7 +2113,7 @@ static SpirvCode convert_gxp_to_spirv_impl(const SceGxmProgram &program, const s
 
     // Entry point
     spv::Function *spv_func_main = b.makeEntryPoint(entry_point_name.c_str());
-    spv::Function *end_hook_func = nullptr;
+    std::function<spv::Function *(bool, bool)> end_hook;
     spv::Function *begin_hook_func = nullptr;
 
     std::vector<spv::Id> empty_args;
@@ -2102,9 +2149,17 @@ static SpirvCode convert_gxp_to_spirv_impl(const SceGxmProgram &program, const s
             if (!translation_state.is_vulkan)
                 begin_hook_func = make_frag_initialize_function(b, translation_state);
 
-            end_hook_func = make_frag_finalize_function(b, parameters, program, utils, features, translation_state);
+            end_hook = [&](const bool output_written_declared, const bool output_read_declared) {
+                translation_state.native_output_declared = output_written_declared;
+                translation_state.native_input_declared = output_read_declared;
+                if (translation_state.frag_color_load_block)
+                    create_fragment_color_load(b, parameters, utils, features, translation_state, program);
+                return make_frag_finalize_function(b, parameters, program, utils, features, translation_state);
+            };
         } else {
-            end_hook_func = make_vert_finalize_function(b, parameters, program, utils, features, translation_state);
+            end_hook = [&](bool, bool) {
+                return make_vert_finalize_function(b, parameters, program, utils, features, translation_state);
+            };
         }
 
         spv::Id iterator_mask = spv::NoResult;
@@ -2142,7 +2197,7 @@ static SpirvCode convert_gxp_to_spirv_impl(const SceGxmProgram &program, const s
             });
         }
 
-        generate_shader_body(b, parameters, program, features, utils, begin_hook_func, end_hook_func, texture_queries, translation_state.render_info_id, spv_func_main, translation_state.interfaces);
+        generate_shader_body(b, parameters, program, features, utils, begin_hook_func, end_hook, texture_queries, translation_state.render_info_id, spv_func_main, translation_state.interfaces);
     } else {
         generate_update_mask_body(b, translation_state);
     }

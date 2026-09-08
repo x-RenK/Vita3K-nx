@@ -215,6 +215,7 @@ struct ShaderProgram {
 };
 
 struct FragmentProgram : ShaderProgram {
+    SceGxmOutputRegisterFormat output_register_format = SCE_GXM_OUTPUT_REGISTER_FORMAT_DECLARED;
 };
 
 struct VertexProgram : ShaderProgram {
