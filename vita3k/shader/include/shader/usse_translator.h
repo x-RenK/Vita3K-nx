@@ -138,14 +138,19 @@ private:
 #define END_REPEAT() }
 
 #define GET_REPEAT(inst, repeat_mode)                                                                                            \
-    [[maybe_unused]] int dest_repeat_offset = get_repeat_offset(inst.opr.dest, current_repeat, repeat_mode, inst.opr.dest.bank); \
+    [[maybe_unused]] int dest_repeat_offset = get_repeat_offset(inst.opr.dest, current_repeat, repeat_mode, inst.opr.dest.bank, true); \
     [[maybe_unused]] int src0_repeat_offset = get_repeat_offset(inst.opr.src0, current_repeat, repeat_mode, inst.opr.src0.bank); \
     [[maybe_unused]] int src1_repeat_offset = get_repeat_offset(inst.opr.src1, current_repeat, repeat_mode, inst.opr.src1.bank); \
     [[maybe_unused]] int src2_repeat_offset = get_repeat_offset(inst.opr.src2, current_repeat, repeat_mode, inst.opr.src2.bank);
 
-    const int get_repeat_offset(Operand &op, const std::uint8_t repeat_index, RepeatMode repeat_mode, RegisterBank bank) {
+    const int get_repeat_offset(Operand &op, const std::uint8_t repeat_index, RepeatMode repeat_mode, RegisterBank bank, const bool is_dest = false) {
         if (repeat_mode == RepeatMode::INTERNAL || repeat_mode == RepeatMode::BOTH) {
             if (bank == RegisterBank::FPINTERNAL) {
+                // INTERNAL repeat only steps the GPI sources through the internal registers.
+                // A regular source that merely maps to an internal register keeps reading the same one.
+                if (repeat_mode == RepeatMode::INTERNAL && !is_dest && !(op.flags & RegisterFlags::GPI)) {
+                    return 0;
+                }
                 return repeat_index;
             }
         }
