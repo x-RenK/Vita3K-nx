@@ -1675,9 +1675,6 @@ EXPORT(int, sceGxmBeginCommandList, SceGxmContext *deferredContext) {
         return RET_ERROR(SCE_GXM_ERROR_WITHIN_COMMAND_LIST);
     }
 
-    deferredContext->state.fragment_ring_buffer_used = 0;
-    deferredContext->state.vertex_ring_buffer_used = 0;
-
     deferredContext->curr_command_list = new SceGxmCommandList();
 
     if (!deferredContext->make_new_alloc_space(emuenv.kernel, emuenv.mem, thread_id)) {
@@ -1694,6 +1691,7 @@ EXPORT(int, sceGxmBeginCommandList, SceGxmContext *deferredContext) {
         if (!deferredContext->state.vertex_ring_buffer) {
             return RET_ERROR(SCE_GXM_ERROR_RESERVE_FAILED);
         }
+        deferredContext->state.vertex_ring_buffer_used = 0;
     }
 
     if (!deferredContext->state.fragment_ring_buffer) {
@@ -1703,6 +1701,7 @@ EXPORT(int, sceGxmBeginCommandList, SceGxmContext *deferredContext) {
         if (!deferredContext->state.fragment_ring_buffer) {
             return RET_ERROR(SCE_GXM_ERROR_RESERVE_FAILED);
         }
+        deferredContext->state.fragment_ring_buffer_used = 0;
     }
 
     // Set command allocate functions
@@ -3979,6 +3978,7 @@ EXPORT(int, sceGxmSetDeferredContextFragmentBuffer, SceGxmContext *deferredConte
     // Use the one specified
     deferredContext->state.fragment_ring_buffer = mem;
     deferredContext->state.fragment_ring_buffer_size = size;
+    deferredContext->state.fragment_ring_buffer_used = 0;
 
     return 0;
 }
@@ -4032,6 +4032,7 @@ EXPORT(int, sceGxmSetDeferredContextVertexBuffer, SceGxmContext *deferredContext
     // Use the one specified
     deferredContext->state.vertex_ring_buffer = mem;
     deferredContext->state.vertex_ring_buffer_size = size;
+    deferredContext->state.vertex_ring_buffer_used = 0;
 
     return 0;
 }
