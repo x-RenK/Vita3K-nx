@@ -215,6 +215,11 @@ private:
     bool m_output_accessed{ false };
     bool m_output_read_declared{ false };
     bool m_raw_move{ false };
+    struct PackedWordFormat {
+        DataType type = DataType::UNK;
+        uint8_t bytes = 0;
+    };
+    std::map<uint32_t, PackedWordFormat> m_packed_word_formats;
 
     // Bytes already filled by VPCK, keyed by register bank and word.
     std::map<std::uint32_t, std::uint8_t> m_vpck_written_bytes;

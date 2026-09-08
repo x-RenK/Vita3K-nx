@@ -43,6 +43,23 @@ spv::Id USSETranslatorVisitor::load(Operand op, const Imm4 dest_mask, const int 
 }
 
 void USSETranslatorVisitor::store(Operand dest, spv::Id source, std::uint8_t dest_mask, int shift_offset) {
+    if (dest.bank != RegisterBank::FPINTERNAL) {
+        const int type_size = get_data_type_size(dest.type);
+        for (int i = 0; i < 4; ++i) {
+            if (!(dest_mask & (1 << i)))
+                continue;
+            const uint32_t word = (dest.num + shift_offset + (i * type_size) / 4) & 0xFFFFFF;
+            const uint32_t key = (static_cast<uint32_t>(dest.bank) << 24) | word;
+            if (!m_store_from_vpck) {
+                m_packed_word_formats.erase(key);
+                continue;
+            }
+            auto &format = m_packed_word_formats[key];
+            if (format.type != dest.type)
+                format = { dest.type, 0 };
+            format.bytes |= static_cast<uint8_t>(((1u << type_size) - 1) << ((i * type_size) % 4));
+        }
+    }
     if (!m_store_from_vpck) {
         const int type_size = get_data_type_size(dest.type);
         for (int i = 0; i < 4; i++) {

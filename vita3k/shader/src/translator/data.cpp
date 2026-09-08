@@ -289,10 +289,36 @@ bool USSETranslatorVisitor::vmov(
         result = source_1;
     }
 
+    std::array<PackedWordFormat, 4> source_formats{};
+    const bool copy_words = !is_conditional && move_data_type == DataType::F32
+        && inst.opr.src1.bank != RegisterBank::FPINTERNAL;
+    if (copy_words) {
+        for (int i = 0; i < 4; ++i) {
+            const auto channel = static_cast<unsigned>(inst.opr.src1.swizzle[i]);
+            if (!(dest_mask & (1 << i)) || channel >= 4)
+                continue;
+            const uint32_t word = (inst.opr.src1.num + src1_repeat_offset + channel) & 0xFFFFFF;
+            const auto it = m_packed_word_formats.find((static_cast<uint32_t>(inst.opr.src1.bank) << 24) | word);
+            if (it != m_packed_word_formats.end())
+                source_formats[i] = it->second;
+        }
+    }
     store(inst.opr.dest, result, dest_mask, dest_repeat_offset);
+    if (copy_words && inst.opr.dest.bank != RegisterBank::FPINTERNAL) {
+        for (int i = 0; i < 4; ++i) {
+            if (!(dest_mask & (1 << i)))
+                continue;
+            const uint32_t word = (inst.opr.dest.num + dest_repeat_offset + i) & 0xFFFFFF;
+            m_packed_word_formats[(static_cast<uint32_t>(inst.opr.dest.bank) << 24) | word] = source_formats[i];
+        }
+    }
     // Moves do not establish the output's numeric type.
-    if (inst.opr.dest.bank == RegisterBank::OUTPUT && inst.opr.dest.num + dest_repeat_offset == 0)
-        m_output_written_declared = false;
+    if (!m_second_program && inst.opr.dest.bank == RegisterBank::OUTPUT && inst.opr.dest.num + dest_repeat_offset == 0 && (dest_mask & 1)) {
+        const auto &format = source_formats[0];
+        m_output_written_declared = copy_words && format.bytes == 0xF
+            && ((format.type == DataType::F16 && m_program.get_fragment_output_type() == SCE_GXM_PARAMETER_TYPE_F16)
+                || (format.type == DataType::F32 && m_program.get_fragment_output_type() == SCE_GXM_PARAMETER_TYPE_F32));
+    }
 
     END_REPEAT()
 
