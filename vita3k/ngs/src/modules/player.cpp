@@ -24,6 +24,22 @@
 
 namespace ngs {
 
+static bool has_playable_buffer(const SceNgsPlayerParams &params, int index) {
+    for (int visited = 0; visited < SCE_NGS_PLAYER_MAX_BUFFERS; ++visited) {
+        if (index < 0 || index >= SCE_NGS_PLAYER_MAX_BUFFERS)
+            return false;
+        const auto &buffer = params.buffer_params[index];
+        if (!buffer.buffer || buffer.bytes_count < 0)
+            return false;
+        if (buffer.bytes_count > 0)
+            return true;
+        if (buffer.loop_count != 0)
+            return false;
+        index = buffer.next_buffer_index;
+    }
+    return false;
+}
+
 std::unique_ptr<ModuleLogicalState> PlayerModule::create_logical_state() const {
     return std::make_unique<PlayerLogicalState>();
 }
@@ -169,8 +185,9 @@ bool PlayerModule::process(KernelState &kern, const MemState &mem, const SceUID 
             finished = true;
             break;
         }
-        if (!params->buffer_params[state->current_buffer].buffer
-            || params->buffer_params[state->current_buffer].bytes_count <= 0) {
+        if ((!params->buffer_params[state->current_buffer].buffer
+                || params->buffer_params[state->current_buffer].bytes_count <= 0)
+            && !has_playable_buffer(*params, state->current_buffer)) {
             if (state->bytes_consumed_since_key_on == 0) {
                 if (request_initial_buffer())
                     continue;
