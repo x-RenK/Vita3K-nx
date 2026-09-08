@@ -60,6 +60,30 @@ static constexpr uint32_t NID_PROCESS_PARAM = 0x70FBA1E7;
 static constexpr bool LOG_MODULE_LOADING = false;
 
 #ifdef __SWITCH__
+static void fix_jak2_gui_lookup(KernelState &kernel, MemState &mem, Address base, uint32_t size) {
+    constexpr uint32_t offset = 0x47B922;
+    constexpr uint32_t length = 0x8CC;
+    if (size < offset + length)
+        return;
+    const auto code = Ptr<uint8_t>(base + offset).get(mem);
+    if (hex_string(sha256(code, length)) != "5b0f2144acd6364411b918f9ea3396b95024993e111371d4d60732dffdde9741") {
+        LOG_INFO("[COMPAT] Jak II GUI lookup signature differs; executable unchanged");
+        return;
+    }
+
+    // Return unknown for missing connections instead of dereferencing GOAL's #f.
+    const std::pair<uint32_t, uint16_t> patches[] = {
+        { 0x09C, 0xE043 },
+        { 0x126, 0x2040 },
+        { 0x128, 0xE009 },
+        { 0x13C, 0xE789 },
+    };
+    for (const auto &[address, instruction] : patches)
+        memcpy(code + address, &instruction, sizeof(instruction));
+    kernel.invalidate_jit_cache(base + offset, length);
+    LOG_INFO("[COMPAT] Jak II returns unknown for missing GUI connections");
+}
+
 static constexpr uint32_t UNCHARTED_JOB_DRAIN_CODE_SIZE = 44;
 
 static void fix_uncharted_job_drain(KernelState &kernel, MemState &mem, Address base, uint32_t size, Block &storage) {
@@ -893,6 +917,8 @@ SceUID load_self(KernelState &kernel, MemState &mem, const void *self, const std
     for (const auto &[index, segment] : segment_reloc_info) {
         if ((segments[index].p_flags & ELF_PF_X) && segments[index].p_filesz <= segment.size) {
 #ifdef __SWITCH__
+            if (index == 0 && strncmp(module_info->name, "Jak2_retail_psp2", sizeof(module_info->name)) == 0)
+                fix_jak2_gui_lookup(kernel, mem, segment.addr, segments[index].p_filesz);
             if (self_path == "app0:uncharted.self" && index == 0)
                 fix_uncharted_job_drain(kernel, mem, segment.addr, segments[index].p_filesz, kernelModuleInfo->job_drain_code);
 #endif
