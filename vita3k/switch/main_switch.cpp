@@ -744,9 +744,13 @@ struct SwitchSixAxis {
             if (handheld && type == SDL_SENSOR_GYRO)
                 event.data[2] = -event.data[2];
             if (right_joycon) {
-                event.data[0] = -event.data[0];
+                if (type == SDL_SENSOR_ACCEL)
+                    event.data[0] = -event.data[0];
                 event.data[1] = -event.data[1];
             }
+            // The shared gamepad mapping sends SDL Y to the Vita roll axis.
+            if (type == SDL_SENSOR_GYRO)
+                event.data[1] = -event.data[1];
             handle_motion_event(emuenv, type, event);
         };
         send(SDL_SENSOR_ACCEL, sensor.acceleration, SDL_STANDARD_GRAVITY);
