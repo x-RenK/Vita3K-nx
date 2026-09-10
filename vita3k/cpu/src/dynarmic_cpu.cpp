@@ -223,6 +223,7 @@ static const bool g_wfe_hook_installed = [] {
 // Slice a JIT is grown to once capacity recycles prove its translation
 // working set does not fit the lean size.
 static constexpr std::size_t GROWN_CODE_SLICE_B = 32u * 1024u * 1024u;
+static constexpr std::size_t MAIN_CODE_SLICE_B = 64u * 1024u * 1024u;
 #endif
 
 class ArmDynarmicCallback : public Dynarmic::A32::UserCallbacks {
@@ -698,7 +699,7 @@ std::unique_ptr<Dynarmic::A32::Jit> DynarmicCPU::make_jit() {
         static std::atomic<bool> hot_slice_taken{ false };
         const std::size_t code_slice = oaknut::switch_detail::code_pool_slice_size();
         const std::size_t lean_slice = code_slice ? code_slice : (8 * 1024 * 1024);
-        code_slice_B = !hot_slice_taken.exchange(true) ? GROWN_CODE_SLICE_B : lean_slice;
+        code_slice_B = !hot_slice_taken.exchange(true) ? MAIN_CODE_SLICE_B : lean_slice;
     }
     config.code_cache_size = code_slice_B;
 #endif
@@ -714,7 +715,7 @@ DynarmicCPU::DynarmicCPU(CPUState *state, std::size_t processor_id, bool cpu_opt
     , cpu_opt(cpu_opt) {
 #ifdef __SWITCH__
     static const bool logged_code_cache_size = [] {
-        LOG_INFO("[switch] Dynarmic code cache: 32 MiB main-thread slice, {} MiB per worker JIT, shared Horizon pool",
+        LOG_INFO("[switch] Dynarmic code cache: 64 MiB main-thread slice, {} MiB per worker JIT, shared Horizon pool",
             oaknut::switch_detail::code_pool_slice_size() / (1024u * 1024u));
         return true;
     }();
