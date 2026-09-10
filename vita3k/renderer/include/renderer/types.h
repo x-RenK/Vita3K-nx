@@ -174,9 +174,6 @@ struct Context {
     uint32_t dedup_program_addr[2] = {};
     uint64_t dedup_texture[SCE_GXM_MAX_TEXTURE_UNITS * 2][2] = {};
     uint64_t dedup_texture_set = 0;
-    uint32_t dedup_uniform_addr[2][16] = {};
-    uint16_t dedup_uniform_size[2][16] = {};
-    uint32_t dedup_uniform_set[2] = {};
     uint64_t dedup_scalar[2][8] = {};
     uint16_t dedup_scalar_set[2] = {};
 
@@ -184,8 +181,6 @@ struct Context {
         emission_dedup_valid = false;
         memset(dedup_program_addr, 0, sizeof(dedup_program_addr));
         dedup_texture_set = 0;
-        dedup_uniform_set[0] = 0;
-        dedup_uniform_set[1] = 0;
         dedup_scalar_set[0] = 0;
         dedup_scalar_set[1] = 0;
     }

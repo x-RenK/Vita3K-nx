@@ -361,25 +361,8 @@ void set_uniform_buffer(State &state, Context *ctx, const bool is_vertex_uniform
     // Calculate the number of bytes
     std::uint32_t bytes_to_copy_and_pad = ((block_size + 15) / 16) * 16;
 
-#ifdef __SWITCH__
-    // This is the only place uniform memory is synchronised: access_buffer()
-    // covers vertex and index data at draw time, uniforms only from here. A
-    // skipped re-set therefore also skips the upload, which holds only while
-    // the bytes at that address are unchanged. Suspect this first if a title
-    // renders with stale constants.
-    if (ctx && ctx->emission_dedup_valid && block_number >= 0 && block_number < 16) {
-        const int side = is_vertex_uniform ? 0 : 1;
-        uint32_t &last_addr = ctx->dedup_uniform_addr[side][block_number];
-        uint16_t &last_size = ctx->dedup_uniform_size[side][block_number];
-        const uint32_t bit = 1u << block_number;
-        if ((ctx->dedup_uniform_set[side] & bit) && last_addr == buffer.address() && last_size == block_size)
-            return;
-        ctx->dedup_uniform_set[side] |= bit;
-        last_addr = buffer.address();
-        last_size = block_size;
-    }
-#endif
-
+    // Each draw needs fresh staging data or synchronization of mapped memory,
+    // even when the guest buffer address is unchanged.
     renderer::add_state_set_command(ctx, renderer::GXMState::UniformBuffer, buffer, is_vertex_uniform, block_number, bytes_to_copy_and_pad);
 }
 
