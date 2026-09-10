@@ -53,28 +53,28 @@ SceOff FileStats::read(void *input_data, const int element_size, const SceSize e
         errno = EBADF;
         return -1;
     }
-    auto *file = get_file_pointer();
-    clearerr(file);
-    if (ftello(file) != file_offset && fseeko(file, file_offset, SEEK_SET) != 0)
+    if (element_size < 0 || element_count > std::numeric_limits<size_t>::max() / element_size) {
+        errno = EINVAL;
         return -1;
+    }
 #endif
 
     // we are filling this buffer this data, why would we have to set some parts to 0 before ?
     // that's because host io does not work well with memory trapping and read-only buffer
     // so set 1 byte to 0 in all pages to trigger all possible pagefaults in this range
     // todo: call a mem function to check this instead
+    const size_t requested_bytes = static_cast<size_t>(element_size) * element_count;
     volatile uint8_t *input_addr = reinterpret_cast<volatile uint8_t *>(input_data);
-    for (int i = 0; i < element_size * element_count; i += page_size)
+    for (size_t i = 0; i < requested_bytes; i += page_size)
         input_addr[i] = 0;
-    input_addr[element_size * element_count - 1] = 0;
+    input_addr[requested_bytes - 1] = 0;
 
 #ifdef __SWITCH__
-    const auto result = fread(input_data, element_size, element_count, file);
-    const auto position = ftello(file);
-    if (position < 0)
+    const auto bytes = shared_file->read_at(input_data, requested_bytes, file_offset);
+    if (bytes < 0)
         return -1;
-    file_offset = position;
-    return result;
+    file_offset += bytes;
+    return bytes / element_size;
 #else
     return fread(input_data, element_size, element_count, wrapped_file.get());
 #endif
@@ -92,6 +92,7 @@ SceOff FileStats::write(const void *data, const SceSize size, const int count) c
     if (size == 0 || count == 0)
         return 0;
     auto *file = get_file_pointer();
+    shared_file->invalidate_read_cache();
     clearerr(file);
     const bool append = get_open_mode() & SCE_O_APPEND;
     if (fseeko(file, append ? 0 : file_offset, append ? SEEK_END : SEEK_SET) != 0)
@@ -117,6 +118,7 @@ int FileStats::truncate(const SceSize size) const {
     }
     if (fflush(get_file_pointer()) != 0)
         return -1;
+    shared_file->invalidate_read_cache();
 #endif
 #ifdef _WIN32
     return _chsize_s(_fileno(get_file_pointer()), size);

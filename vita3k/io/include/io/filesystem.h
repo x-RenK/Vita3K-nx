@@ -26,6 +26,10 @@
 #include <dirent.h>
 
 #include <memory>
+#include <cstdint>
+#ifdef __SWITCH__
+#include <array>
+#endif
 
 typedef std::shared_ptr<FILE> FilePtr;
 
@@ -33,6 +37,25 @@ typedef std::shared_ptr<FILE> FilePtr;
 struct SharedFile {
     FilePtr stream;
     bool writable;
+
+    static constexpr size_t read_cache_capacity = 256 * 1024;
+    static constexpr size_t read_cache_block_size = 4 * 1024;
+    struct ReadCacheEntry {
+        std::unique_ptr<uint8_t[]> data;
+        int64_t offset = 0;
+        size_t size = 0;
+        size_t capacity = 0;
+        uint64_t last_use = 0;
+    };
+    std::array<ReadCacheEntry, read_cache_capacity / read_cache_block_size> read_cache;
+    size_t read_cache_allocated = 0;
+    uint64_t read_cache_clock = 0;
+    int64_t sequential_read_end = -1;
+    size_t sequential_read_bytes = 0;
+
+    int64_t read_at(void *data, size_t size, int64_t offset);
+    ReadCacheEntry *prepare_read_cache(size_t size);
+    void invalidate_read_cache();
 };
 
 using SharedFilePtr = std::shared_ptr<SharedFile>;
