@@ -270,10 +270,15 @@ int FillStat(struct stat *output, const smb2_stat_64 &input) {
         break;
     }
 
-    const auto links = input.smb2_nlink ? input.smb2_nlink : 1;
-    if (!CheckedAssign(output->st_ino, input.smb2_ino)
-        || !CheckedAssign(output->st_nlink, links)
-        || !CheckedAssign(output->st_size, input.smb2_size)
+    // st_ino and st_nlink are advisory, and newlib types both as 16-bit here
+    // while SMB reports a 64-bit file id. Fold and clamp them instead of
+    // rejecting the entry, or every real share enumerates as empty.
+    const std::uint64_t id = input.smb2_ino;
+    output->st_ino = static_cast<ino_t>(id ^ (id >> 16) ^ (id >> 32) ^ (id >> 48));
+    const std::uint64_t links = input.smb2_nlink ? input.smb2_nlink : 1;
+    output->st_nlink = static_cast<nlink_t>(
+        std::min<std::uint64_t>(links, std::numeric_limits<nlink_t>::max()));
+    if (!CheckedAssign(output->st_size, input.smb2_size)
         || !CheckedAssign(output->st_atime, input.smb2_atime)
         || !CheckedAssign(output->st_mtime, input.smb2_mtime)
         || !CheckedAssign(output->st_ctime, input.smb2_ctime)
@@ -925,32 +930,35 @@ int SmbDirNext(_reent *reent, DIR_ITER *state, char *name, struct stat *output) 
         if(entry.name.size()>NAME_MAX)return Fail(reent,ENAMETOOLONG);
         std::memcpy(name,entry.name.c_str(),entry.name.size()+1);*output=entry.info;Succeed(reent);return 0;
     }
-    const smb2dirent *entry = smb2_readdir(mount->context, directory->handle);
-    if (!entry) {
-        directory->complete=true;
-        if(directory->entries){
-            if(mount->directory_cache.size()>=SMB_DIRECTORY_CACHE_LIMIT)mount->directory_cache.erase(mount->directory_cache.begin());
-            mount->directory_cache[directory->path]={*directory->entries,std::chrono::steady_clock::now()+SMB_DIRECTORY_CACHE_LIFETIME,true};
+    // An entry this devoptab cannot represent is skipped, not reported as the
+    // end of the directory: failing here hides every remaining entry.
+    for (;;) {
+        const smb2dirent *entry = smb2_readdir(mount->context, directory->handle);
+        if (!entry) {
+            directory->complete=true;
+            if(directory->entries){
+                if(mount->directory_cache.size()>=SMB_DIRECTORY_CACHE_LIMIT)mount->directory_cache.erase(mount->directory_cache.begin());
+                mount->directory_cache[directory->path]={*directory->entries,std::chrono::steady_clock::now()+SMB_DIRECTORY_CACHE_LIFETIME,true};
+            }
+            return Fail(reent, ENOENT);
         }
-        return Fail(reent, ENOENT);
+        if (!entry->name || std::strlen(entry->name) > NAME_MAX)
+            continue;
+        if (FillStat(output, entry->st) != 0)
+            continue;
+        std::memcpy(name, entry->name, std::strlen(entry->name) + 1);
+        if(directory->entries&&directory->entries->size()<SMB_DIRECTORY_ENTRY_LIMIT){
+            const CachedDirectoryEntry cached_entry{entry->name,*output};
+            directory->entries->push_back(cached_entry);
+            auto &incremental=mount->directory_cache[directory->path];
+            if(incremental.entries.size()<SMB_DIRECTORY_ENTRY_LIMIT)
+                incremental.entries.push_back(cached_entry);
+            incremental.expires=std::chrono::steady_clock::now()+SMB_DIRECTORY_CACHE_LIFETIME;
+            incremental.complete=false;
+        }
+        Succeed(reent);
+        return 0;
     }
-    if (!entry->name || std::strlen(entry->name) > NAME_MAX)
-        return Fail(reent, ENAMETOOLONG);
-    std::memcpy(name, entry->name, std::strlen(entry->name) + 1);
-    const int stat_error = FillStat(output, entry->st);
-    if (stat_error != 0)
-        return Fail(reent, stat_error);
-    if(directory->entries&&directory->entries->size()<SMB_DIRECTORY_ENTRY_LIMIT){
-        const CachedDirectoryEntry cached_entry{entry->name,*output};
-        directory->entries->push_back(cached_entry);
-        auto &incremental=mount->directory_cache[directory->path];
-        if(incremental.entries.size()<SMB_DIRECTORY_ENTRY_LIMIT)
-            incremental.entries.push_back(cached_entry);
-        incremental.expires=std::chrono::steady_clock::now()+SMB_DIRECTORY_CACHE_LIFETIME;
-        incremental.complete=false;
-    }
-    Succeed(reent);
-    return 0;
 }
 
 int SmbDirClose(_reent *reent, DIR_ITER *state) {
