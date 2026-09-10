@@ -461,13 +461,15 @@ spv::Id USSETranslatorVisitor::do_alu_op(Instruction &inst, const Imm4 source_ma
 
     case Opcode::VMIN:
     case Opcode::VF16MIN: {
-        result = m_b.createBuiltinCall(source_type, std_builtins, GLSLstd450FMin, { vsrc1, vsrc2 });
+        // NMin and NMax, not FMin and FMax: the hardware returns whichever operand is not a NaN,
+        // and games clamp with these to bound a value that can be one.
+        result = m_b.createBuiltinCall(source_type, std_builtins, GLSLstd450NMin, { vsrc1, vsrc2 });
         break;
     }
 
     case Opcode::VMAX:
     case Opcode::VF16MAX: {
-        result = m_b.createBuiltinCall(source_type, std_builtins, GLSLstd450FMax, { vsrc1, vsrc2 });
+        result = m_b.createBuiltinCall(source_type, std_builtins, GLSLstd450NMax, { vsrc1, vsrc2 });
         break;
     }
 
@@ -963,12 +965,12 @@ bool USSETranslatorVisitor::sop2(
 
         case Opcode::FMIN:
         case Opcode::VMIN: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMin, { lhs, rhs });
+            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450NMin, { lhs, rhs });
         }
 
         case Opcode::FMAX:
         case Opcode::VMAX: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMax, { lhs, rhs });
+            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450NMax, { lhs, rhs });
         }
 
         default: {
@@ -1168,12 +1170,12 @@ bool shader::usse::USSETranslatorVisitor::sop2m(Imm2 pred,
 
         case Opcode::FMIN:
         case Opcode::VMIN: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMin, { lhs, rhs });
+            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450NMin, { lhs, rhs });
         }
 
         case Opcode::FMAX:
         case Opcode::VMAX: {
-            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450FMax, { lhs, rhs });
+            return m_b.createBuiltinCall(type, std_builtins, GLSLstd450NMax, { lhs, rhs });
         }
 
         default: {
