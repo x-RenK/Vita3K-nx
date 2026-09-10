@@ -762,6 +762,12 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
         stride_bytes = pixel_stride * gxm::bits_per_pixel(base_format) / 8;
     }
     uint32_t total_surface_size = stride_bytes * original_height;
+    if (tiling == SurfaceTiling::Linear && original_height > 0) {
+        // A linear region ends with its last row, not a whole stride later. Measured in full rows a
+        // region that starts part way along one looks like it runs off the end of its surface.
+        total_surface_size = stride_bytes * (original_height - 1)
+            + original_width * gxm::bits_per_pixel(base_format) / 8;
+    }
 
     // Overlapping surfaces can use different layouts for the same guest memory.
     auto ite = color_address_lookup.upper_bound(address);
