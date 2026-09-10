@@ -29,9 +29,16 @@ namespace {
 // Renderer voice budget. Vita titles rarely open more than a handful of output
 // ports simultaneously; 24 is generous while keeping the renderer light.
 constexpr int SWITCH_NUM_VOICES = 24;
-// Wavebuf slots per port. ~8 buffers of the port granularity give enough queue
-// depth to avoid underruns without adding much latency.
+// Wavebuf slots per port. Eight wavebufs give enough queue depth to avoid underruns
+// without adding much latency.
 constexpr int SWITCH_NUM_SLOTS = 8;
+// How much audio a port keeps queued, and how long one wavebuf should play for. A renderer
+// voice holds four wavebufs at a time, so with a small grain, one buffer per wavebuf leaves
+// the hardware holding less audio than a renderer frame consumes and it falls behind real
+// time. Grains at or above the threshold already cover a frame and are submitted unbatched.
+constexpr uint64_t SWITCH_TARGET_QUEUE_US = 60000;
+constexpr uint64_t SWITCH_TARGET_WAVEBUF_US = 20000;
+constexpr uint64_t SWITCH_COALESCE_BELOW_US = 5000;
 
 constexpr AudioRendererConfig AR_CONFIG = {
     .output_rate = AudioRendererOutputRate_48kHz,
@@ -179,8 +186,15 @@ AudioOutPortPtr SwitchAudioAdapter::open_port(int nb_channels, int freq, int nb_
     port->len_bytes = nb_sample * nb_channels * static_cast<int>(sizeof(int16_t));
     port->len_microseconds = static_cast<uint64_t>(nb_sample) * 1'000'000ULL / freq;
 
+    port->frames_per_wavebuf = 1;
+    if (port->len_microseconds > 0 && port->len_microseconds < SWITCH_COALESCE_BELOW_US) {
+        port->frames_per_wavebuf = static_cast<int>(
+            (SWITCH_TARGET_WAVEBUF_US + port->len_microseconds - 1) / port->len_microseconds);
+    }
+    port->wavebuf_microseconds = port->len_microseconds * port->frames_per_wavebuf;
+
     port->num_slots = SWITCH_NUM_SLOTS;
-    port->slot_bytes = align_up(port->len_bytes, AUDREN_BUFFER_ALIGNMENT);
+    port->slot_bytes = align_up(port->len_bytes * port->frames_per_wavebuf, AUDREN_BUFFER_ALIGNMENT);
     port->pool_size = align_up(port->slot_bytes * port->num_slots, AUDREN_MEMPOOL_ALIGNMENT);
     port->pool = memalign(AUDREN_MEMPOOL_ALIGNMENT, port->pool_size);
     if (!port->pool) {
@@ -235,8 +249,9 @@ AudioOutPortPtr SwitchAudioAdapter::open_port(int nb_channels, int freq, int nb_
         audrvUpdate(&driver);
     }
 
-    LOG_INFO("Audio port opened on voice {}: {} ch @ {} Hz, {} samples, volume {}",
-        voice, nb_channels, freq, nb_sample, port->volume);
+    LOG_INFO("Audio port opened on voice {}: {} ch @ {} Hz, {} samples, {} per wavebuf ({:.1f}ms), volume {}",
+        voice, nb_channels, freq, nb_sample, port->frames_per_wavebuf,
+        port->wavebuf_microseconds / 1000.0, port->volume);
 
     return port;
 }
@@ -256,14 +271,17 @@ void SwitchAudioAdapter::audio_output(AudioOutPort &out_port, const void *buffer
     // The hardware call returns once the previous buffer has played, so filling the
     // whole ring instead lets a guest audio thread run far ahead of the sound.
     const int max_in_flight = std::clamp(
-        static_cast<int>((60000 + port.len_microseconds - 1) / std::max<uint64_t>(port.len_microseconds, 1)),
+        static_cast<int>((SWITCH_TARGET_QUEUE_US + port.wavebuf_microseconds - 1) / std::max<uint64_t>(port.wavebuf_microseconds, 1)),
         2, port.num_slots);
 
     // Find a reusable wavebuf slot, applying backpressure until one frees up so
     // the guest is paced by the renderer's consumption rate. Slot states live
     // under driver_mutex, so the wait must use that same lock with the search as
     // its predicate or a wakeup landing in between is lost.
-    const auto find_slot = [&]() {
+    const auto find_slot = [&]() -> int {
+        // A partly filled wavebuf is still this port's, so keep writing into it.
+        if (port.fill_slot >= 0)
+            return port.fill_slot;
         int in_flight = 0;
         int free_slot = -1;
         for (int i = 0; i < port.num_slots; i++) {
@@ -288,15 +306,32 @@ void SwitchAudioAdapter::audio_output(AudioOutPort &out_port, const void *buffer
             return;
         slot = find_slot();
     }
-    void *const dst = static_cast<u8 *>(port.pool) + slot * port.slot_bytes;
+    void *const slot_base = static_cast<u8 *>(port.pool) + slot * port.slot_bytes;
+    void *const dst = static_cast<u8 *>(slot_base) + port.fill_offset;
     memcpy(dst, buffer, out_port.len_bytes);
     armDCacheFlush(dst, out_port.len_bytes);
 
-    const int nb_sample = out_port.len_bytes / (port.channels * static_cast<int>(sizeof(int16_t)));
+    port.submitted_samples += out_port.len_bytes / (port.channels * static_cast<int>(sizeof(int16_t)));
+    port.fill_offset += out_port.len_bytes;
+    port.fill_count++;
+    if (port.fill_count < port.frames_per_wavebuf) {
+        // The batch is incomplete, so there is nothing to hand the renderer yet. Pacing the
+        // guest once per wavebuf rather than once per buffer is also the slack it needs to
+        // mix the rest of the batch.
+        port.fill_slot = slot;
+        return;
+    }
+
+    const size_t filled_bytes = port.fill_offset;
+    const int nb_sample = static_cast<int>(filled_bytes) / (port.channels * static_cast<int>(sizeof(int16_t)));
+    port.fill_slot = -1;
+    port.fill_offset = 0;
+    port.fill_count = 0;
+
     AudioDriverWaveBuf &wb = port.wavebufs[slot];
     wb = AudioDriverWaveBuf{};
-    wb.data_pcm16 = static_cast<s16 *>(dst);
-    wb.size = out_port.len_bytes;
+    wb.data_pcm16 = static_cast<s16 *>(slot_base);
+    wb.size = filled_bytes;
     wb.start_sample_offset = 0;
     wb.end_sample_offset = nb_sample;
     wb.state = AudioDriverWaveBufState_Free;
@@ -305,7 +340,6 @@ void SwitchAudioAdapter::audio_output(AudioOutPort &out_port, const void *buffer
         LOG_WARN("audrvVoiceAddWaveBuf failed for voice {}", port.voice_id);
         return;
     }
-    port.submitted_samples += nb_sample;
 
     // Restart the voice if it stopped after draining its queue.
     if (!audrvVoiceIsPlaying(&driver, port.voice_id))

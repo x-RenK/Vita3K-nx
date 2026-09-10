@@ -101,6 +101,16 @@ struct SwitchAudioOutPort : public AudioOutPort {
     int mempool_id = -1;
     size_t slot_bytes = 0;
     int num_slots = 0;
+
+    // How many guest buffers go into one wavebuf, and how long the result plays for. A voice
+    // holds only four wavebufs, so a grain of a few milliseconds has to be batched or the
+    // renderer can never be given enough audio to cover its own frame.
+    int frames_per_wavebuf = 1;
+    uint64_t wavebuf_microseconds = 0;
+    // The slot being filled and how much of it is written, while a batch is incomplete.
+    int fill_slot = -1;
+    size_t fill_offset = 0;
+    int fill_count = 0;
     std::vector<AudioDriverWaveBuf> wavebufs;
     std::mutex submit_mutex;
 
