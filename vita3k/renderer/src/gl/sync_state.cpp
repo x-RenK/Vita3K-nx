@@ -469,7 +469,7 @@ void clear_previous_uniform_storage(GLContext &context) {
     context.fragment_uniform_buffer_storage_ptr.second = 0;
 }
 
-void sync_vertex_streams_and_attributes(GLContext &context, GxmRecordState &state, const MemState &mem) {
+void sync_vertex_streams_and_attributes(GLContext &context, GxmRecordState &state, const MemState &mem, uint32_t instance_count) {
     // Vertex attributes.
     const SceGxmVertexProgram &vertex_program = *state.vertex_program.get(mem);
     GLVertexProgram *glvert = reinterpret_cast<GLVertexProgram *>(vertex_program.renderer_data.get());
@@ -574,7 +574,12 @@ void sync_vertex_streams_and_attributes(GLContext &context, GxmRecordState &stat
 
             glEnableVertexAttribArray(attrib_location + i);
 
-            if (gxm::is_stream_instancing(static_cast<SceGxmIndexSource>(stream.indexSource))) {
+            if (stream.stride == 0) {
+                // A zero stride reads element 0 for every vertex, and only that one element is
+                // uploaded. OpenGL reads a zero stride as tightly packed, so pin it with a
+                // divisor the instance index never reaches.
+                glVertexAttribDivisor(attrib_location + i, std::max<uint32_t>(instance_count, 1));
+            } else if (gxm::is_stream_instancing(static_cast<SceGxmIndexSource>(stream.indexSource))) {
                 glVertexAttribDivisor(attrib_location + i, 1);
             } else {
                 glVertexAttribDivisor(attrib_location + i, 0);

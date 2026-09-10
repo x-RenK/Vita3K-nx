@@ -189,7 +189,7 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
     }
 
     // Upload vertex stream
-    sync_vertex_streams_and_attributes(context, context.record, mem);
+    sync_vertex_streams_and_attributes(context, context.record, mem, instance_count);
 
     // Upload index data.
     const GLsizeiptr index_size = (format == SCE_GXM_INDEX_FORMAT_U16) ? 2 : 4;
