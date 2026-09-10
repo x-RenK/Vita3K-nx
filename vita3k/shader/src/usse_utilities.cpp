@@ -911,23 +911,15 @@ static spv::Id apply_modifiers(spv::Builder &b, const SpirvUtilFunctions &utils,
 
     // Apply modifier flags
     if (flags & shader::usse::RegisterFlags::Negative) {
-        // Negate the value
-        spv::Id c0 = spv::NoResult;
-        spv::Op sub_op = spv::OpAny;
-
-        if (is_int) {
-            c0 = b.makeIntConstant(0);
-            sub_op = spv::OpISub;
-        } else if (is_uint) {
-            c0 = b.makeUintConstant(0);
-            sub_op = spv::OpISub;
+        if (is_int || is_uint) {
+            const spv::Id c0 = is_int ? b.makeIntConstant(0) : b.makeUintConstant(0);
+            const std::vector<spv::Id> ops(num_comp, c0);
+            result = b.createBinOp(spv::OpISub, dest_type, (num_comp == 1) ? c0 : b.makeCompositeConstant(dest_type, ops), result);
         } else {
-            c0 = b.makeFloatConstant(0.0f);
-            sub_op = spv::OpFSub;
+            // Subtracting a float from zero turns -0 into +0, and the sign of a zero decides the
+            // sign of a reciprocal taken from it, so negate rather than subtract.
+            result = b.createUnaryOp(spv::OpFNegate, dest_type, result);
         }
-
-        std::vector<spv::Id> ops(num_comp, c0);
-        result = b.createBinOp(sub_op, dest_type, (num_comp == 1) ? c0 : b.makeCompositeConstant(dest_type, ops), result);
     }
 
     return result;
