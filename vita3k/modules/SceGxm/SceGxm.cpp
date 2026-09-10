@@ -3024,32 +3024,52 @@ EXPORT(int, sceGxmMapMemory, Ptr<void> base, uint32_t size, uint32_t attribs) {
         LOG_WARN_ONCE("Mapping unaligned GPU memory");
 
     // Make sure the base address and size are 4KiB-aligned
-    Address aligned_base = align_down(base.address(), KiB(4));
-    size = align(base.address() + size, KiB(4)) - aligned_base;
+    const Address aligned_base = align_down(base.address(), KiB(4));
+    const Address aligned_end = align(base.address() + size, KiB(4));
 
-    // Check if it has already been mapped
-    // Some games intentionally overlapping mapped region. Nothing we can do. Allow it, bear your own consequences.
     GxmState &gxm = emuenv.gxm;
-    auto ite = gxm.memory_mapped_regions.lower_bound(aligned_base);
-    if ((ite == gxm.memory_mapped_regions.end()) || (ite->first != aligned_base)) {
-        if ((ite != gxm.memory_mapped_regions.end()) && ((aligned_base + size) > ite->first)) {
-            LOG_ERROR("Overlapping mapped memory detected");
 
-            if (emuenv.renderer->features.enable_memory_mapping) {
-                // overlapping memory mapping is not supported
-                return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
-            }
-        }
-        gxm.memory_mapped_regions.emplace(aligned_base, MemoryMapInfo{ aligned_base, size, attribs });
-
-        // little big planet maps regions of size 0
-        if (emuenv.renderer->features.enable_memory_mapping && size > 0)
-            renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::MemoryMap, true, aligned_base, size);
+    // little big planet maps regions of size 0
+    if (aligned_end == aligned_base) {
+        if (!gxm.memory_mapped_regions.try_emplace(aligned_base, MemoryMapInfo{ aligned_base, 0, attribs, base.address() }).second)
+            return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
 
         return 0;
     }
 
-    return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
+    // A request can run into a range that is already mapped, and rounding an unaligned base down
+    // can put two allocations in one page. Map the parts that are not covered rather than refusing
+    // the call: a part that is dropped has no GPU buffer, and draws reading from it bind nothing.
+    std::vector<std::pair<Address, uint32_t>> parts;
+    Address cursor = aligned_base;
+    auto ite = gxm.memory_mapped_regions.lower_bound(aligned_base);
+    if (ite != gxm.memory_mapped_regions.begin()) {
+        const auto &before = *std::prev(ite);
+        cursor = std::max(cursor, before.first + before.second.size);
+    }
+    for (; (ite != gxm.memory_mapped_regions.end()) && (ite->first < aligned_end); ++ite) {
+        if (ite->first > cursor)
+            parts.emplace_back(cursor, ite->first - cursor);
+        cursor = std::max(cursor, ite->first + ite->second.size);
+    }
+    if (cursor < aligned_end)
+        parts.emplace_back(cursor, aligned_end - cursor);
+
+    if (parts.empty())
+        return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
+
+    if ((parts.size() > 1) || (parts.front().first != aligned_base) || (parts.front().second != aligned_end - aligned_base))
+        LOG_WARN_ONCE("Overlapping mapped memory detected");
+
+    for (const auto [part_base, part_size] : parts) {
+        // a zero sized region can sit on the start of a part and holds no mapping of its own
+        gxm.memory_mapped_regions.insert_or_assign(part_base, MemoryMapInfo{ part_base, part_size, attribs, base.address() });
+
+        if (emuenv.renderer->features.enable_memory_mapping)
+            renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::MemoryMap, true, part_base, part_size);
+    }
+
+    return 0;
 }
 
 EXPORT(int, sceGxmMapVertexUsseMemory, Ptr<void> base, uint32_t size, uint32_t *offset) {
@@ -5809,24 +5829,45 @@ EXPORT(int, sceGxmUnmapMemory, Ptr<void> base) {
     // Make sure the base address are 4KiB-aligned
     Address aligned_base = align_down(base.address(), KiB(4));
 
-    auto ite = emuenv.gxm.memory_mapped_regions.find(aligned_base);
-    if (ite == emuenv.gxm.memory_mapped_regions.end()) {
+    // A map can have been split into several regions, so release all of them. Regions carry the
+    // pointer they were mapped with; fall back to whatever holds the rounded base.
+    const auto collect = [&](const Address owner) {
+        std::vector<Address> found;
+        for (const auto &[part_base, part] : emuenv.gxm.memory_mapped_regions) {
+            if (part.owner == owner)
+                found.push_back(part_base);
+        }
+        return found;
+    };
+
+    std::vector<Address> parts = collect(base.address());
+    if (parts.empty()) {
+        const auto at_base = emuenv.gxm.memory_mapped_regions.find(aligned_base);
+        if (at_base != emuenv.gxm.memory_mapped_regions.end())
+            parts = collect(at_base->second.owner);
+    }
+    if (parts.empty()) {
         return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
     }
 
-    // this memory range may contain trapped region, so untrap everything to make sure
-    // we don't run into issues later
-    // TODO: call a mem function to invalidate the range instead
-    uint8_t *addr_start = base.cast<uint8_t>().get(emuenv.mem);
-    for (volatile uint8_t *addr = addr_start; addr < addr_start + ite->second.size; addr += emuenv.mem.host_page_size) {
-        // this should cause a read and a write
-        *addr = *addr;
+    for (const Address part_base : parts) {
+        const auto ite = emuenv.gxm.memory_mapped_regions.find(part_base);
+
+        // this memory range may contain trapped region, so untrap everything to make sure
+        // we don't run into issues later
+        // TODO: call a mem function to invalidate the range instead
+        uint8_t *addr_start = Ptr<uint8_t>(part_base).get(emuenv.mem);
+        for (volatile uint8_t *addr = addr_start; addr < addr_start + ite->second.size; addr += emuenv.mem.host_page_size) {
+            // this should cause a read and a write
+            *addr = *addr;
+        }
+
+        if (emuenv.renderer->features.enable_memory_mapping && ite->second.size > 0)
+            renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::MemoryUnmap, true, part_base);
+
+        emuenv.gxm.memory_mapped_regions.erase(ite);
     }
 
-    if (emuenv.renderer->features.enable_memory_mapping && ite->second.size > 0)
-        renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::MemoryUnmap, true, aligned_base);
-
-    emuenv.gxm.memory_mapped_regions.erase(ite);
     return 0;
 }
 

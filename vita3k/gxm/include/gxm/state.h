@@ -52,6 +52,8 @@ struct MemoryMapInfo {
     Address offset;
     std::uint32_t size;
     std::uint32_t perm;
+    // Pointer sceGxmMapMemory was called with. It tells apart two allocations that share a page.
+    Address owner;
 };
 
 struct GxmState {
