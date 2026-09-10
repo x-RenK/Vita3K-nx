@@ -524,7 +524,9 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
             break;
         case SCE_GXM_TEXTURE_BASE_FORMAT_U2F10F10F10:
             // don't change what openGL is doing (which is completely wrong)
-            if (!is_vulkan || support_a2rgb10) {
+            // Vulkan has no such format and translate_format substitutes RGBA16F, twice as wide, so
+            // the texels always have to be converted. support_a2rgb10 only covers the unorm format.
+            if (!is_vulkan) {
                 LOG_INFO_ONCE("Your device support SCE_GXM_TEXTURE_BASE_FORMAT_U2F10F10F10");
                 break;
             }
