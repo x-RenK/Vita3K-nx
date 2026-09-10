@@ -200,8 +200,11 @@ void set_polygon_mode(State &state, Context *ctx, bool is_front, SceGxmPolygonMo
 }
 
 void set_stencil_func(State &state, Context *ctx, bool is_front, SceGxmStencilFunc func, SceGxmStencilOp stencilFail, SceGxmStencilOp depthFail, SceGxmStencilOp depthPass, unsigned char compareMask, unsigned char writeMask) {
+    // SceGxmStencilFunc holds its value in bits 25 to 27, so it has to be brought down before it is
+    // packed. Left where it is, all eight values fall out of the key and a call that changes only
+    // the comparison is dropped as a repeat.
     SCALAR_STATE_DEDUP(ctx, is_front, SCALAR_SLOT_STENCIL_FUNC,
-        (static_cast<uint64_t>(func) << 40) | (static_cast<uint64_t>(stencilFail & 0xFF) << 32)
+        (static_cast<uint64_t>(static_cast<uint32_t>(func) >> 24) << 56) | (static_cast<uint64_t>(stencilFail & 0xFF) << 32)
             | (static_cast<uint64_t>(depthFail & 0xFF) << 24) | (static_cast<uint64_t>(depthPass & 0xFF) << 16)
             | (static_cast<uint64_t>(compareMask) << 8) | static_cast<uint64_t>(writeMask));
     renderer::add_state_set_command(ctx, renderer::GXMState::StencilFunc, is_front, func, stencilFail, depthFail, depthPass, compareMask, writeMask);
