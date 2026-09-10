@@ -93,7 +93,7 @@ struct Config {
         bool export_as_png = false;
         bool fps_hack = false;
         bool shader_cache = true;
-        bool spirv_shader = false;
+        bool spirv_shader = VITA3K_DEFAULT_SPIRV_SHADER;
         bool texture_cache = true;
         bool stretch_the_display_area = false;
         bool fullscreen_hd_res_pixel_perfect = false;

@@ -136,6 +136,8 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
 #define VITA3K_DEFAULT_LOG_LEVEL 0 /*SPDLOG_LEVEL_TRACE*/
 #endif
 
+#define VITA3K_DEFAULT_SPIRV_SHADER false
+
 #define CONFIG_INDIVIDUAL(code)                                                                         \
     code(bool, "initial-setup", false, initial_setup)                                                   \
     code(bool, "gdbstub", false, gdbstub)                                                               \
@@ -225,7 +227,7 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(int, "check-for-updates-mode", static_cast<int>(UPDATE_STARTUP_PROMPT), check_for_updates_mode)\
     code(int, "file-loading-delay", 0, file_loading_delay)                                              \
     code(bool, "shader-cache", true, shader_cache)                                                      \
-    code(bool, "spirv-shader", false, spirv_shader)                                                     \
+    code(bool, "spirv-shader", VITA3K_DEFAULT_SPIRV_SHADER, spirv_shader)                                \
     code(bool, "fps-hack", false, fps_hack)                                                             \
     code(uint64_t, "current-ime-lang", 4, current_ime_lang)                                             \
     code(int, "psn-signed-in", false, psn_signed_in)                                                    \

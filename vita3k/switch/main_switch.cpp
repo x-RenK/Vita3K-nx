@@ -93,7 +93,7 @@ public:
         destroy_render_context();
     }
 
-    bool initialize_for_backend(renderer::Backend backend, const std::string &configured_backend) {
+    bool initialize_for_backend(renderer::Backend backend, const std::string &configured_backend, bool want_gl_spirv) {
         if (m_display != EGL_NO_DISPLAY || m_surface != EGL_NO_SURFACE || m_context != EGL_NO_CONTEXT)
             destroy_render_context();
 
@@ -103,6 +103,7 @@ public:
             unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
             unsetenv("MESA_SHADER_CACHE_DISABLE");
             unsetenv("MESA_SHADER_CACHE_DIR");
+            unsetenv("NOUVEAU_SWITCH_GL_SPIRV");
             return true;
         }
 
@@ -110,6 +111,8 @@ public:
         // Vita3K already owns a dedicated render thread. Mesa's extra GL thread
         // adds latency and makes context shutdown needlessly complicated.
         setenv("MESA_SWITCH_GLTHREAD", "0", 1);
+        // Enable the extension before creating the OpenGL context.
+        setenv("NOUVEAU_SWITCH_GL_SPIRV", want_gl_spirv ? "1" : "0", 1);
         setenv("MESA_SWITCH_GL_DRIVER", use_zink ? "zink" : "nvc0", 1);
         setenv("MESA_LOADER_DRIVER_OVERRIDE", use_zink ? "zink" : "nouveau", 1);
         // Mesa's global Switch cache is shared by every homebrew and its
@@ -1500,7 +1503,8 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
             emuenv->vulkan_device_info = std::make_unique<renderer::VulkanDeviceInfo>(renderer::enumerate_vulkan_devices());
 
         if (!frame_host.initialize_for_backend(
-                emuenv->backend_renderer, emuenv->cfg.current_config.backend_renderer)) {
+                emuenv->backend_renderer, emuenv->cfg.current_config.backend_renderer,
+                emuenv->cfg.current_config.spirv_shader)) {
             LOG_ERROR("Failed to initialize the selected Switch graphics backend '{}'.",
                 emuenv->cfg.current_config.backend_renderer);
             cleanup_launch(app::AppSessionStopReason::LaunchFailure);

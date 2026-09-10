@@ -234,7 +234,7 @@ bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path,
         out.export_as_png = gpu.attribute("export-as-png").as_bool();
         out.fps_hack = gpu.attribute("fps-hack").as_bool();
         out.shader_cache = gpu.attribute("shader-cache").as_bool(true);
-        out.spirv_shader = gpu.attribute("spirv-shader").as_bool();
+        out.spirv_shader = gpu.attribute("spirv-shader").as_bool(out.spirv_shader);
         out.texture_cache = gpu.attribute("texture-cache").as_bool(true);
     }
 
