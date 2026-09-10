@@ -1921,22 +1921,28 @@ void VKState::unmap_memory(MemState &mem, Ptr<void> address) {
 }
 
 std::tuple<vk::Buffer, uint32_t> VKState::get_matching_mapping(const Ptr<void> address) {
-    auto mapped_memory = mapped_memories.lower_bound(address.address());
-    if (mapped_memory == mapped_memories.end()
-        || mapped_memory->first + mapped_memory->second.size <= address.address()) {
-        LOG_ERROR("Could not find matching mapped buffer for vertex stream");
-        return { nullptr, 0 };
+    // A game can map a range inside one it already mapped. The nearest base below an address can
+    // be such an inner range and need not reach the address, so walk down to the one enclosing it.
+    for (auto mapped_memory = mapped_memories.lower_bound(address.address());
+         mapped_memory != mapped_memories.end(); ++mapped_memory) {
+        if (mapped_memory->first + mapped_memory->second.size > address.address())
+            return std::make_tuple(mapped_memory->second.buffer,
+                mapped_memory->second.buffer_offset + address.address() - mapped_memory->first);
     }
 
-    return std::make_tuple(mapped_memory->second.buffer,
-        mapped_memory->second.buffer_offset + address.address() - mapped_memory->first);
+    // logging an error flushes the log file, which is far too slow to do once per draw
+    LOG_ERROR_ONCE("Could not find matching mapped buffer for guest address {:#x}", address.address());
+    return { nullptr, 0 };
 }
 
 std::tuple<uint64_t, int32_t, int32_t> VKState::get_matching_device_address(const Address address) {
+    // an inner mapping must not hide the one that encloses the address, as above
     auto mapped_memory = mapped_memories.lower_bound(address);
-    if (mapped_memory == mapped_memories.end()
-        || static_cast<uint64_t>(mapped_memory->first) + mapped_memory->second.size <= address) {
-        LOG_ERROR("Could not find matching mapped buffer for vertex stream");
+    while (mapped_memory != mapped_memories.end()
+        && static_cast<uint64_t>(mapped_memory->first) + mapped_memory->second.size <= address)
+        ++mapped_memory;
+    if (mapped_memory == mapped_memories.end()) {
+        LOG_ERROR_ONCE("Could not find matching mapped buffer for guest address {:#x}", address);
         return { 0, 0, 0 };
     }
 
