@@ -225,7 +225,8 @@ private:
     std::map<std::uint32_t, std::uint8_t> m_vpck_written_bytes;
     bool m_store_from_vpck{ false };
 
-    spv::Id do_alu_op(Instruction &inst, const Imm4 source_mask, const Imm4 possible_dest_mask);
+    spv::Id do_alu_op(Instruction &inst, const Imm4 source_mask, const Imm4 possible_dest_mask,
+        const int src1_offset = 0, const int src2_offset = 0);
 
 public:
     void set_secondary_program(const bool is_it) {

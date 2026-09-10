@@ -387,9 +387,10 @@ bool USSETranslatorVisitor::vdp(
     return true;
 }
 
-spv::Id USSETranslatorVisitor::do_alu_op(Instruction &inst, const Imm4 source_mask, const Imm4 possible_dest_mask) {
-    spv::Id vsrc1 = load(inst.opr.src1, source_mask, 0);
-    spv::Id vsrc2 = load(inst.opr.src2, source_mask, 0);
+spv::Id USSETranslatorVisitor::do_alu_op(Instruction &inst, const Imm4 source_mask, const Imm4 possible_dest_mask,
+    const int src1_offset, const int src2_offset) {
+    spv::Id vsrc1 = load(inst.opr.src1, source_mask, src1_offset);
+    spv::Id vsrc2 = load(inst.opr.src2, source_mask, src2_offset);
     std::vector<spv::Id> ids;
     ids.push_back(vsrc1);
 
@@ -569,6 +570,7 @@ bool USSETranslatorVisitor::v32nmad(
     inst.opcode = opcode;
 
     inst.opr.dest = decode_dest(inst.opr.dest, dest_n, dest_bank_sel, dest_bank_ext, true, 7, m_second_program);
+    inst.opr.dest.index = 3;
     inst.opr.src1 = decode_src12(inst.opr.src1, src1_n, src1_bank_sel, src1_bank_ext, true, 7, m_second_program);
     inst.opr.src1.flags = decode_modifier(src1_mod);
     inst.opr.src1.index = 1;
@@ -607,10 +609,19 @@ bool USSETranslatorVisitor::v32nmad(
 
     // Recompile
     m_b.setDebugSourceLocation(m_recompiler.cur_pc, nullptr);
-    spv::Id result = do_alu_op(inst, source_mask, dest_mask);
+
+    // A swizzle mode SMLSI shifts the operands of the instructions that follow it. This one has no
+    // repeat count of its own, so the shift at index 0 applies. Immediate mode yields zero here.
+    set_repeat_multiplier(2, 2, 2, 2);
+    const int dest_offset = get_repeat_offset(inst.opr.dest, 0, RepeatMode::SLMSI, inst.opr.dest.bank, true);
+    const int src1_offset = get_repeat_offset(inst.opr.src1, 0, RepeatMode::SLMSI, inst.opr.src1.bank);
+    const int src2_offset = get_repeat_offset(inst.opr.src2, 0, RepeatMode::SLMSI, inst.opr.src2.bank);
+    reset_repeat_multiplier();
+
+    spv::Id result = do_alu_op(inst, source_mask, dest_mask, src1_offset, src2_offset);
 
     if (result != spv::NoResult) {
-        store(inst.opr.dest, result, dest_mask, 0);
+        store(inst.opr.dest, result, dest_mask, dest_offset);
     }
 
     return true;
