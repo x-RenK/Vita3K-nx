@@ -231,9 +231,9 @@ static SharedGLObject get_or_compile_shader(const SceGxmProgram *program, const 
 
         // Need to compile new one and add it to cache
         if (features.spirv_shader && spirv) {
-            obj = compile_spirv(type, load_spirv_shader(*program, features, false, hints, maskupdate, shader_cache_path, shader_log_path, shader_version + "spv", shader_cache, shader_debug_dump));
+            obj = compile_spirv(type, load_spirv_shader(*program, hash, features, false, hints, maskupdate, shader_cache_path, shader_log_path, shader_version + "spv", shader_cache, shader_debug_dump));
         } else {
-            const std::string source = load_glsl_shader(*program, features, hints, maskupdate,
+            const std::string source = load_glsl_shader(*program, hash, features, hints, maskupdate,
                 shader_cache_path, shader_log_path, shader_version, shader_cache, shader_debug_dump);
             obj = compile_glsl(type, source);
         }

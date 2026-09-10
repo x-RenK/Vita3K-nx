@@ -198,7 +198,7 @@ bool create(std::unique_ptr<FragmentProgram> &fp, State &state, const SceGxmProg
     // Try to hash this shader
     fp->hash = sha256(&program, program.size);
     fp->output_register_format = output_format;
-    if (program.is_native_color() && output_format != SCE_GXM_OUTPUT_REGISTER_FORMAT_DECLARED) {
+    if (program.is_native_color()) {
         // Native color translations depend on the requested register format.
         std::array<uint8_t, sizeof(Sha256Hash) + 1> keyed;
         std::copy(fp->hash.begin(), fp->hash.end(), keyed.begin());

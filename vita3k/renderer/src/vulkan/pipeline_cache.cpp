@@ -353,7 +353,10 @@ void PipelineCache::read_pipeline_cache() {
     LOG_INFO("Found pipeline cache, reading...");
 
     pipeline_cache_file.seekg(0, fs::ifstream::end);
-    size_t pipeline_size = pipeline_cache_file.tellg();
+    const auto file_size = pipeline_cache_file.tellg();
+    if (file_size < 0)
+        return;
+    size_t pipeline_size = static_cast<size_t>(file_size);
     pipeline_cache_file.seekg(0);
 
     if (pipeline_size < sizeof(uint32_t) + sizeof(size_t))
@@ -363,18 +366,18 @@ void PipelineCache::read_pipeline_cache() {
     auto read_integer = [&]<typename T>(T &val) {
         pipeline_cache_file.read(reinterpret_cast<char *>(&val), sizeof(T));
     };
-    uint32_t magic_number;
+    uint32_t magic_number = 0;
     read_integer(magic_number);
-    size_t nb_hashes;
+    size_t nb_hashes = 0;
     read_integer(nb_hashes);
     // safety check
-    size_t hashes_size = sizeof(magic_number) + sizeof(nb_hashes) + nb_hashes * sizeof(uint64_t);
-    if (magic_number != pipeline_cache_magic || pipeline_size < hashes_size) {
+    const size_t header_size = sizeof(magic_number) + sizeof(nb_hashes);
+    if (!pipeline_cache_file || magic_number != pipeline_cache_magic || nb_hashes > (pipeline_size - header_size) / sizeof(uint64_t)) {
         LOG_WARN("Pipeline cache is corrupted, ignoring it.");
         pipeline_cache_file.close();
         return;
     }
-    pipeline_size -= hashes_size;
+    pipeline_size -= header_size + nb_hashes * sizeof(uint64_t);
 
     // insert hashes with null pipeline
     for (size_t i = 0; i < nb_hashes; i++) {
@@ -384,7 +387,8 @@ void PipelineCache::read_pipeline_cache() {
     }
 
     std::vector<char> pipeline_data(pipeline_size);
-    pipeline_cache_file.read(pipeline_data.data(), pipeline_size);
+    if (!pipeline_cache_file.read(pipeline_data.data(), pipeline_size))
+        return;
     pipeline_cache_file.close();
 
     vk::PipelineCacheCreateInfo cache_info{
@@ -548,7 +552,7 @@ vk::ShaderModule PipelineCache::load_shader_module(const Sha256Hash &hash, const
         auto source = renderer::pre_load_shader_spirv(shader_path);
         const bool needs_translation = source.empty() && program;
         if (needs_translation)
-            source = load_spirv_shader(*program, state.features, true, *hints, maskupdate, state.shaders_path, state.shaders_log_path, shader_version, true, state.shader_debug_dump, false);
+            source = load_spirv_shader(*program, hash, state.features, true, *hints, maskupdate, state.shaders_path, state.shaders_log_path, shader_version, true, state.shader_debug_dump, false);
 
         if (!source.empty()) {
             const vk::ShaderModuleCreateInfo shader_info{
