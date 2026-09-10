@@ -490,6 +490,20 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
             upload_format = SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8U8;
             pixels = texture_data_decompressed.data();
             break;
+        case SCE_GXM_TEXTURE_BASE_FORMAT_ETC1:
+            // Nothing we target can sample ETC1. Unswizzle the blocks first, like the BCn path below.
+            if (is_swizzled && texture_type != SCE_GXM_TEXTURE_LINEAR && texture_type != SCE_GXM_TEXTURE_LINEAR_STRIDED) {
+                texture_pixels_lineared.resize(static_cast<size_t>(pixels_per_stride) * memory_height / 2);
+                resolve_z_order_compressed_texture(base_format, texture_pixels_lineared.data(), pixels, pixels_per_stride, memory_height);
+                pixels = texture_pixels_lineared.data();
+            }
+            texture_data_decompressed.resize(static_cast<size_t>(pixels_per_stride) * memory_height * 4);
+            decompress_compressed_texture(base_format, texture_data_decompressed.data(), pixels, pixels_per_stride, memory_height);
+            bytes_per_pixel = 4;
+            bpp = 32;
+            upload_format = SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8U8;
+            pixels = texture_data_decompressed.data();
+            break;
         case SCE_GXM_TEXTURE_BASE_FORMAT_U8U3U3U2:
             // Convert U8U3U3U2 to U8U8U8U8
             texture_data_decompressed.resize(pixels_per_stride * memory_height * 4);
@@ -557,7 +571,8 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
             break;
         }
 
-        if (texture_type != SCE_GXM_TEXTURE_LINEAR && texture_type != SCE_GXM_TEXTURE_LINEAR_STRIDED && !gxm::is_pvrt_format(base_format)) {
+        if (texture_type != SCE_GXM_TEXTURE_LINEAR && texture_type != SCE_GXM_TEXTURE_LINEAR_STRIDED
+            && !gxm::is_pvrt_format(base_format) && base_format != SCE_GXM_TEXTURE_BASE_FORMAT_ETC1) {
             // Convert data to linear layout
             texture_pixels_lineared.resize(pixels_per_stride * memory_height * bytes_per_pixel);
 

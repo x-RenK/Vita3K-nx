@@ -16,6 +16,7 @@
 // with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -94,6 +95,7 @@ void resolve_z_order_compressed_texture(SceGxmTextureBaseFormat fmt, void *dest,
     case SCE_GXM_TEXTURE_BASE_FORMAT_UBC1:
     case SCE_GXM_TEXTURE_BASE_FORMAT_UBC4:
     case SCE_GXM_TEXTURE_BASE_FORMAT_SBC4:
+    case SCE_GXM_TEXTURE_BASE_FORMAT_ETC1:
         block_size = 8;
         break;
 
@@ -112,6 +114,79 @@ void resolve_z_order_compressed_texture(SceGxmTextureBaseFormat fmt, void *dest,
     if (block_size > 0)
         resolve_z_order_compressed_image(width, height, static_cast<const std::uint8_t *>(data),
             static_cast<std::uint8_t *>(dest), block_size);
+}
+
+// One 4x4 ETC1 block: two base colours, an intensity table per half and two bits of modifier index
+// per pixel, stored column by column. The flip bit picks whether the halves are left and right or
+// top and bottom. The Vita stores each block as two little endian 32 bit words, so both halves
+// arrive reversed against the byte order the specification writes them in.
+static void decompress_etc1_block(const uint8_t *stored, uint32_t *dest, const uint32_t dest_stride,
+    const uint32_t pixels_x, const uint32_t pixels_y) {
+    const uint8_t block[4] = { stored[3], stored[2], stored[1], stored[0] };
+    static const int modifiers[8][4] = {
+        { 2, 8, -2, -8 },
+        { 5, 17, -5, -17 },
+        { 9, 29, -9, -29 },
+        { 13, 42, -13, -42 },
+        { 18, 60, -18, -60 },
+        { 24, 80, -24, -80 },
+        { 33, 106, -33, -106 },
+        { 47, 183, -47, -183 },
+    };
+
+    int base[2][3];
+    if (block[3] & 2) {
+        // differential: five bits of base colour and a three bit signed delta for the second half
+        const int r = block[0] >> 3, g = block[1] >> 3, b = block[2] >> 3;
+        const int dr = static_cast<int>(block[0] & 7) - ((block[0] & 4) ? 8 : 0);
+        const int dg = static_cast<int>(block[1] & 7) - ((block[1] & 4) ? 8 : 0);
+        const int db = static_cast<int>(block[2] & 7) - ((block[2] & 4) ? 8 : 0);
+        const int second[3] = { std::clamp(r + dr, 0, 31), std::clamp(g + dg, 0, 31), std::clamp(b + db, 0, 31) };
+        const int first[3] = { r, g, b };
+        for (int i = 0; i < 3; i++) {
+            base[0][i] = (first[i] << 3) | (first[i] >> 2);
+            base[1][i] = (second[i] << 3) | (second[i] >> 2);
+        }
+    } else {
+        // individual: four bits of base colour per half
+        const int first[3] = { block[0] >> 4, block[1] >> 4, block[2] >> 4 };
+        const int second[3] = { block[0] & 0xF, block[1] & 0xF, block[2] & 0xF };
+        for (int i = 0; i < 3; i++) {
+            base[0][i] = (first[i] << 4) | first[i];
+            base[1][i] = (second[i] << 4) | second[i];
+        }
+    }
+
+    const int table[2] = { (block[3] >> 5) & 7, (block[3] >> 2) & 7 };
+    const bool flip = (block[3] & 1) != 0;
+    // reversed as well, which puts the two index planes back where the specification numbers them
+    const uint32_t indices = (static_cast<uint32_t>(stored[7]) << 24) | (static_cast<uint32_t>(stored[6]) << 16)
+        | (static_cast<uint32_t>(stored[5]) << 8) | stored[4];
+
+    for (uint32_t x = 0; x < 4; x++) {
+        for (uint32_t y = 0; y < 4; y++) {
+            const uint32_t bit = x * 4 + y;
+            const uint32_t index = (((indices >> (16 + bit)) & 1) << 1) | ((indices >> bit) & 1);
+            const int half = flip ? (y >= 2 ? 1 : 0) : (x >= 2 ? 1 : 0);
+            const int modifier = modifiers[table[half]][index];
+            const uint32_t r = static_cast<uint32_t>(std::clamp(base[half][0] + modifier, 0, 255));
+            const uint32_t g = static_cast<uint32_t>(std::clamp(base[half][1] + modifier, 0, 255));
+            const uint32_t b = static_cast<uint32_t>(std::clamp(base[half][2] + modifier, 0, 255));
+            if (x < pixels_x && y < pixels_y)
+                dest[y * dest_stride + x] = 0xFF000000u | (b << 16) | (g << 8) | r;
+        }
+    }
+}
+
+void decompress_etc1_image(const uint32_t width, const uint32_t height, const uint8_t *data, uint32_t *dest) {
+    const uint32_t blocks_x = (width + 3) / 4;
+    const uint32_t blocks_y = (height + 3) / 4;
+    for (uint32_t by = 0; by < blocks_y; by++) {
+        for (uint32_t bx = 0; bx < blocks_x; bx++) {
+            decompress_etc1_block(data + (by * blocks_x + bx) * 8, dest + by * 4 * width + bx * 4,
+                width, std::min(4u, width - bx * 4), std::min(4u, height - by * 4));
+        }
+    }
 }
 
 uint32_t decompress_compressed_texture(SceGxmTextureBaseFormat fmt, void *dest, const void *data, const uint32_t width, const uint32_t height) {
@@ -154,6 +229,9 @@ uint32_t decompress_compressed_texture(SceGxmTextureBaseFormat fmt, void *dest, 
         decompress_bc_image(width, height, static_cast<const uint8_t *>(data),
             static_cast<uint32_t *>(dest), format_id);
         return (((width + 3) / 4) * ((height + 3) / 4) * ((format_id != 1 && format_id != 4 && format_id != 5) ? 16 : 8));
+    } else if (fmt == SCE_GXM_TEXTURE_BASE_FORMAT_ETC1) {
+        decompress_etc1_image(width, height, static_cast<const uint8_t *>(data), static_cast<uint32_t *>(dest));
+        return ((width + 3) / 4) * ((height + 3) / 4) * 8;
     } else if ((fmt >= SCE_GXM_TEXTURE_BASE_FORMAT_PVRT2BPP) && (fmt <= SCE_GXM_TEXTURE_BASE_FORMAT_PVRTII4BPP)) {
         pvr::PVRTDecompressPVRTC(data, (fmt == SCE_GXM_TEXTURE_BASE_FORMAT_PVRT2BPP) || (fmt == SCE_GXM_TEXTURE_BASE_FORMAT_PVRTII2BPP), width, height,
             (fmt == SCE_GXM_TEXTURE_BASE_FORMAT_PVRTII2BPP) || (fmt == SCE_GXM_TEXTURE_BASE_FORMAT_PVRTII4BPP), static_cast<uint8_t *>(dest));

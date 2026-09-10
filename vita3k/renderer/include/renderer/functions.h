@@ -212,6 +212,12 @@ void resolve_z_order_compressed_texture(SceGxmTextureBaseFormat fmt, void *dest,
 uint32_t decompress_compressed_texture(SceGxmTextureBaseFormat fmt, void *dest, const void *data, const uint32_t width, const uint32_t height);
 
 /**
+ * \brief Decompresses an ETC1 image into RGBA8. 'data' holds 8-byte blocks in raster block order,
+ *        'dest' receives align(width, 4) * align(height, 4) pixels.
+ */
+void decompress_etc1_image(const uint32_t width, const uint32_t height, const uint8_t *data, uint32_t *dest);
+
+/**
  * \brief Decompresses all the blocks of a block compressed texture and stores the resulting pixels in 'image'.
  *
  * Output results is in format RGBA, with each channel being 8 bits.
