@@ -41,7 +41,8 @@ STORAGE_UASP_INPUTS := $(STORAGE_DEPS_SOURCE)/libusbhsfs/usbhsfs_uasp.c \
 STORAGE_INCLUDE := $(STORAGE_BUILD)/include
 LIBSMB2_ARCHIVE := $(STORAGE_BUILD)/_deps/libsmb2-build/lib/libsmb2.a
 LIBUSBHSFS_ARCHIVE := $(STORAGE_BUILD)/_deps/libusbhsfs-build/liblibusbhsfs.a
-STORAGE_LIBS := $(LIBSMB2_ARCHIVE) $(LIBUSBHSFS_ARCHIVE)
+LIBNTFS3G_ARCHIVE := $(PORTLIBS)/lib/libntfs-3g.a
+STORAGE_LIBS := $(LIBSMB2_ARCHIVE) $(LIBUSBHSFS_ARCHIVE) $(LIBNTFS3G_ARCHIVE)
 
 APP_TITLE	:=	Vita3K
 APP_AUTHOR	:=	naga
@@ -67,8 +68,9 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs $(ARCH) -Wl,-Map,$(notdir $*.ma
 			-flto=auto -Wl,--gc-sections -Wl,--build-id=none
 
 # SDL2_image (covers) + libcurl (SteamGridDB) + turbojpeg (forwarder NACP icons).
-# Keep the two storage archives ahead of their system-library dependencies and
-# in the same order as the CMake interface target (libsmb2, then libusbhsfs).
+# Keep the storage archives ahead of their system-library dependencies and in
+# the same order as the CMake interface target: libsmb2, libusbhsfs, then the
+# NTFS-3G portlib libusbhsfs links against.
 LIBS	:=	$(STORAGE_LIBS) `$(PREFIX)pkg-config --libs $(PKGS)` -lturbojpeg -lz -lGLESv2 -lnx
 
 #---------------------------------------------------------------------------------

@@ -1185,7 +1185,10 @@ bool InitializeUsb(std::string *error) {
             return false;
         }
         if (s_usb_initialized) return true;
-        usbHsFsSetFileSystemMountFlags(UsbHsFsMountFlags_None);
+        // Replay an unclean NTFS journal and list hidden game folders. FAT and
+        // exFAT ignore both flags.
+        usbHsFsSetFileSystemMountFlags(UsbHsFsMountFlags_ReplayJournal |
+            UsbHsFsMountFlags_ShowHiddenFiles);
         const Result result = usbHsFsInitialize(0);
         if (R_FAILED(result)) {
             if (error) { char message[96]; std::snprintf(message, sizeof(message),
