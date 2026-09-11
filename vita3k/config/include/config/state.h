@@ -99,6 +99,7 @@ struct Config {
         bool fullscreen_hd_res_pixel_perfect = false;
         int file_loading_delay = 0;
         bool psn_signed_in = false;
+        bool netcheck_offline = false;
         int sys_button = static_cast<int>(SCE_SYSTEM_PARAM_ENTER_BUTTON_CROSS);
         int sys_lang = static_cast<int>(SCE_SYSTEM_PARAM_LANG_ENGLISH_US);
         int sys_date_format = static_cast<int>(SCE_SYSTEM_PARAM_DATE_FORMAT_MMDDYYYY);

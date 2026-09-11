@@ -558,11 +558,38 @@ EXPORT(int, sceNetCheckDialogGetPS3ConnectInfo) {
     return UNIMPLEMENTED();
 }
 
+// The ad-hoc modes connect two consoles directly and need no PSN, so only these three have an
+// online handshake to answer for.
+static bool netcheck_mode_needs_psn(SceNetCheckDialogMode mode) {
+    switch (mode) {
+    case SCE_NETCHECK_DIALOG_MODE_PSN:
+    case SCE_NETCHECK_DIALOG_MODE_PSN_ONLINE:
+    case SCE_NETCHECK_DIALOG_MODE_PS3_CONNECT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 EXPORT(int, sceNetCheckDialogGetResult, SceNetCheckDialogResult *result) {
     TRACY_FUNC(sceNetCheckDialogGetResult, result);
+    if (!result)
+        return RET_ERROR(SCE_COMMON_DIALOG_ERROR_NULL);
+
+    // The reserved tail is the guest's own memory until it is written.
+    *result = {};
     result->result = emuenv.common_dialog.result;
 
-    if (emuenv.common_dialog.netcheck.mode != SCE_NETCHECK_DIALOG_MODE_ADHOC_CONN)
+    // A passed check leads a game into a PSN handshake the unimplemented NP modules can never
+    // complete. Cancelled is an outcome every game already handles.
+    if (emuenv.cfg.current_config.netcheck_offline && netcheck_mode_needs_psn(emuenv.common_dialog.netcheck.mode)) {
+        result->result = SCE_COMMON_DIALOG_RESULT_USER_CANCELED;
+        result->psnModeSucceeded = 0;
+        LOG_WARN_ONCE("Network check reported as cancelled");
+        return 0;
+    }
+
+    if (netcheck_mode_needs_psn(emuenv.common_dialog.netcheck.mode))
         STUBBED("result->result = 0");
 
     return 0;

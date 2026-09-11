@@ -71,6 +71,7 @@ void copy_global_to_current(Config::CurrentConfig &current, const Config &cfg) {
     current.fullscreen_hd_res_pixel_perfect = cfg.fullscreen_hd_res_pixel_perfect;
     current.file_loading_delay = cfg.file_loading_delay;
     current.psn_signed_in = cfg.psn_signed_in;
+    current.netcheck_offline = cfg.netcheck_offline;
     current.sys_button = cfg.sys_button;
     current.sys_lang = cfg.sys_lang;
     current.sys_date_format = cfg.sys_date_format;
@@ -126,6 +127,7 @@ void copy_current_to_global(Config &cfg, const Config::CurrentConfig &current) {
     cfg.fullscreen_hd_res_pixel_perfect = current.fullscreen_hd_res_pixel_perfect;
     cfg.file_loading_delay = current.file_loading_delay;
     cfg.psn_signed_in = current.psn_signed_in;
+    cfg.netcheck_offline = current.netcheck_offline;
     cfg.sys_button = current.sys_button;
     cfg.sys_lang = current.sys_lang;
     cfg.sys_date_format = current.sys_date_format;
@@ -275,8 +277,10 @@ bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path,
         out.validation_layer = dbg.attribute("validation-layer").as_bool(true);
     }
 
-    if (!config_child.child("network").empty())
+    if (!config_child.child("network").empty()) {
         out.psn_signed_in = config_child.child("network").attribute("psn-signed-in").as_bool();
+        out.netcheck_offline = config_child.child("network").attribute("netcheck-offline").as_bool();
+    }
 
     return true;
 }
@@ -360,6 +364,7 @@ bool save_custom_config(const Config::CurrentConfig &cc, const fs::path &config_
 
     auto network_child = config_child.append_child("network");
     network_child.append_attribute("psn-signed-in") = cc.psn_signed_in;
+    network_child.append_attribute("netcheck-offline") = cc.netcheck_offline;
 
     const auto custom_cfg_path = get_custom_config_path(config_path, app_path);
     if (!doc.save_file(custom_cfg_path.c_str())) {

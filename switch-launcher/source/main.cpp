@@ -438,6 +438,7 @@ static const Opt S_network[] = {
   O_RANGE ("HTTP read-end attempts",   "http-read-end-attempts", 0, 100,  5,  "10"),
   O_RANGE ("HTTP read-end sleep (ms)", "http-read-end-sleep-ms", 0, 2000, 50, "250"),
   O_CHOICE("PSN signed in",            "psn-signed-in",          C_boolint,   "0"),
+  O_CHOICE("Skip PSN network check",   "netcheck-offline",       C_bool,      "false"),
   O_RANGE ("Ad-hoc address index",     "adhoc-addr",             0, 16,   1,  "0"),
 };
 // Controller (-> config.yml). The direct libnx input path consumes these Switch
@@ -2503,6 +2504,7 @@ static const SettingHelpEntry SETTING_HELP[] = {
   {"http-read-end-attempts","Network","Sets how many times Vita3K checks for the end of an HTTP response."},
   {"http-read-end-sleep-ms","Network","Sets the delay between HTTP response-end checks."},
   {"psn-signed-in","Network","Reports a signed-in PSN state to games. It does not sign the console into PlayStation Network."},
+  {"netcheck-offline","Network","Reports the in-game network check as cancelled so a title falls back to offline play. Fixes games that hang waiting on PlayStation Network services Vita3K does not implement."},
   {"adhoc-addr","Network","Selects the local address index used by Vita ad-hoc networking."},
   {"disable-motion","Controls","Disables Vita motion-sensor input derived from the active Switch controller."},
   {"switch-gyro-source","Controls","Chooses which detached Joy-Con supplies motion. Falls back to the other connected Joy-Con."},
