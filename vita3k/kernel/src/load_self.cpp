@@ -84,6 +84,46 @@ static void fix_jak2_gui_lookup(KernelState &kernel, MemState &mem, Address base
     LOG_INFO("[COMPAT] Jak II returns unknown for missing GUI connections");
 }
 
+static void fix_borderlands2_callback_publish(KernelState &kernel, MemState &mem, Address base, uint32_t size) {
+    constexpr uint32_t offset = 0x801E6A;
+    // Wwise grows the callback array before storing the element, so a reader walking it in
+    // between finds a count of one over a slot that still holds pool garbage.
+    constexpr uint8_t published_first[] = {
+        0x0B, 0xF1, 0x04, 0x00, // ADD.W r0, r11, #4
+        0xC8, 0xF8, 0x04, 0x00, // STR.W r0, [r8, #4]
+        0xBB, 0xF1, 0x00, 0x0F, // CMP.W r11, #0
+        0x04, 0xD0, //             BEQ   +8
+        0x00, 0x99, //             LDR   r1, [sp]
+        0x01, 0x20, //             MOVS  r0, #1
+        0xCB, 0xF8, 0x00, 0x10, // STR.W r1, [r11]
+        0x02, 0x90, //             STR   r0, [sp, #8]
+    };
+    // The same instructions, storing the element before the count that publishes it. The branch
+    // keeps its encoding: it skips the store either way and still lands on the count update.
+    constexpr uint8_t stored_first[] = {
+        0xBB, 0xF1, 0x00, 0x0F, // CMP.W r11, #0
+        0x04, 0xD0, //             BEQ   +8
+        0x00, 0x99, //             LDR   r1, [sp]
+        0xCB, 0xF8, 0x00, 0x10, // STR.W r1, [r11]
+        0x01, 0x20, //             MOVS  r0, #1
+        0x02, 0x90, //             STR   r0, [sp, #8]
+        0x0B, 0xF1, 0x04, 0x00, // ADD.W r0, r11, #4
+        0xC8, 0xF8, 0x04, 0x00, // STR.W r0, [r8, #4]
+    };
+    static_assert(sizeof(published_first) == sizeof(stored_first));
+    if (size < offset + sizeof(published_first))
+        return;
+    const auto code = Ptr<uint8_t>(base + offset).get(mem);
+    if (memcmp(code, published_first, sizeof(published_first)) != 0) {
+        LOG_INFO("[COMPAT] Borderlands 2 callback publish signature differs; executable unchanged");
+        return;
+    }
+
+    memcpy(code, stored_first, sizeof(stored_first));
+    kernel.invalidate_jit_cache(base + offset, sizeof(stored_first));
+    LOG_INFO("[COMPAT] Borderlands 2 stores a callback before publishing it");
+}
+
 static constexpr uint32_t UNCHARTED_JOB_DRAIN_CODE_SIZE = 44;
 
 static void fix_uncharted_job_drain(KernelState &kernel, MemState &mem, Address base, uint32_t size, Block &storage) {
@@ -919,6 +959,8 @@ SceUID load_self(KernelState &kernel, MemState &mem, const void *self, const std
 #ifdef __SWITCH__
             if (index == 0 && strncmp(module_info->name, "Jak2_retail_psp2", sizeof(module_info->name)) == 0)
                 fix_jak2_gui_lookup(kernel, mem, segment.addr, segments[index].p_filesz);
+            if (index == 0 && strncmp(module_info->name, "WILLOWGAME_NGP_SHIPPING", sizeof(module_info->name)) == 0)
+                fix_borderlands2_callback_publish(kernel, mem, segment.addr, segments[index].p_filesz);
             if (self_path == "app0:uncharted.self" && index == 0)
                 fix_uncharted_job_drain(kernel, mem, segment.addr, segments[index].p_filesz, kernelModuleInfo->job_drain_code);
 #endif
