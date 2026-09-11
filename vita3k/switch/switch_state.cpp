@@ -138,3 +138,9 @@ void switch_stop_preemption_watchdog() {
     if (preemption_thread.joinable())
         preemption_thread.join();
 }
+
+cheat::JitInvalidate switch_cheat_jit_invalidate(EmuEnvState &emuenv) {
+    return [&emuenv](uint32_t address, size_t size) {
+        emuenv.kernel.invalidate_jit_cache(address, size);
+    };
+}

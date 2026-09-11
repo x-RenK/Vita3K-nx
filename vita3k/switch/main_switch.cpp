@@ -35,6 +35,7 @@
 #include <motion/event_handler.h>
 #include <motion/state.h>
 #include <audio/state.h>
+#include <cheat/functions.h>
 #include <display/state.h>
 #include <io/state.h>
 #include <np/trophy/collection.h>
@@ -1092,6 +1093,7 @@ enum QuickMenuEntry {
     QUICK_MENU_FRAME_GEN,
     QUICK_MENU_VIRTUAL_MOUSE,
     QUICK_MENU_TROPHIES,
+    QUICK_MENU_CHEATS,
     QUICK_MENU_SETTINGS,
     QUICK_MENU_LAUNCHER,
     QUICK_MENU_EXIT,
@@ -1104,6 +1106,7 @@ enum class QuickMenuScreen {
     TrophyGroups,
     TrophyList,
     Settings,
+    Cheats,
 };
 
 struct SwitchTrophyEntry {
@@ -1384,6 +1387,36 @@ static bool adjust_live_setting(EmuEnvState &emuenv, int index, int direction) {
     return true;
 }
 
+// The list opens with the master switch, then the cheats in file order.
+static constexpr int CHEAT_ROW_MASTER = 0;
+static constexpr int CHEAT_ROW_FIRST = 1;
+
+static std::vector<overlay::list_row> build_cheat_rows(EmuEnvState &emuenv, const cheat::CheatFile &file) {
+    const bool master = emuenv.cfg.enable_cheats;
+    std::vector<overlay::list_row> rows;
+    rows.reserve(file.cheats.size() + CHEAT_ROW_FIRST);
+
+    overlay::list_row master_row;
+    master_row.primary = "Enable cheats";
+    const bool bundled = !file.path.empty() && file.path.parent_path() == emuenv.bundled_cheat_path;
+    master_row.secondary = file.header.empty() ? fs_utils::path_to_utf8(file.path.filename()) : file.header;
+    master_row.secondary += bundled ? "    Built-in database" : "    From the cheats folder on the SD card";
+    master_row.value = on_off(master);
+    rows.push_back(std::move(master_row));
+
+    for (const auto &cheat : file.cheats) {
+        overlay::list_row row;
+        row.primary = cheat.name;
+        row.secondary = fmt::format("{} code line{}", cheat.lines.size(), cheat.lines.size() == 1 ? "" : "s");
+        if (cheat.broken)
+            row.secondary += "    Could not be applied, see the log";
+        row.value = on_off(cheat.enabled);
+        row.dimmed = !master || cheat.broken;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 static std::shared_ptr<overlay::pause_overlay> show_switch_quick_menu(EmuEnvState &emuenv,
     app::AppSessionController &controller, SwitchTouchTracker &touch_tracker, int selection,
     bool virtual_mouse) {
@@ -1405,6 +1438,7 @@ static std::shared_ptr<overlay::pause_overlay> show_switch_quick_menu(EmuEnvStat
         lsfg_available,
         lsfg_available && renderer::vulkan::lsfg::is_enabled(),
         virtual_mouse);
+    menu->set_switch_menu_cheats(cheat::cheat_count(emuenv.cheat) > 0);
     clear_switch_controller_input(emuenv);
     emuenv.touch.finger_count = 0;
     touch_tracker.reset();
@@ -1549,7 +1583,10 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
         int trophy_group_selection = 0;
         int menu_repeat_frames = 0;
         std::vector<SwitchTrophyGroup> trophy_groups;
+        cheat::CheatFile cheat_view;
+        bool cheats_dirty = false;
         std::shared_ptr<overlay::pause_overlay> quick_menu_overlay;
+        const cheat::JitInvalidate cheat_invalidate = switch_cheat_jit_invalidate(*emuenv);
         SwitchControllerStatus controller_status{};
         SwitchTouchTracker touch_tracker{};
         VirtualMouseState virtual_mouse{};
@@ -1679,6 +1716,7 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
             } else if (quick_menu_open) {
                 const bool lsfg_available = emuenv->backend_renderer == renderer::Backend::Vulkan
                     && renderer::vulkan::lsfg::is_available();
+                const bool cheats_available = cheat::cheat_count(emuenv->cheat) > 0;
                 const bool in_list = quick_menu_screen != QuickMenuScreen::Menu;
                 const QuickMenuScreen entry_screen = quick_menu_screen;
 
@@ -1690,6 +1728,7 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
                             ? static_cast<int>(trophy_groups[static_cast<size_t>(trophy_group_selection)].trophies.size())
                             : 0;
                     case QuickMenuScreen::Settings: return LIVE_SETTING_COUNT;
+                    case QuickMenuScreen::Cheats: return static_cast<int>(cheat_view.cheats.size()) + CHEAT_ROW_FIRST;
                     default: return 0;
                     }
                 }();
@@ -1712,6 +1751,14 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
                         quick_menu_overlay->set_list("Settings",
                             "A / Left / Right: change    B: back    Changes last until the game closes",
                             build_live_setting_rows(*emuenv), quick_menu_list_selection);
+                };
+                const auto refresh_cheat_rows = [&] {
+                    cheat_view = cheat::snapshot(emuenv->cheat);
+                    if (!quick_menu_overlay)
+                        return;
+                    quick_menu_overlay->set_list("Cheats", "A: toggle    B: back    Y: save",
+                        build_cheat_rows(*emuenv, cheat_view), quick_menu_list_selection);
+                    quick_menu_overlay->set_list_status(cheats_dirty ? "Unsaved changes" : "Saved");
                 };
 
                 // Edge-triggered input plus a held-repeat, so a long trophy list
@@ -1746,7 +1793,8 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
                             quick_menu_selection = (quick_menu_selection + step
                                                        + overlay::pause_overlay::k_menu_entries)
                                 % overlay::pause_overlay::k_menu_entries;
-                        } while (quick_menu_selection == QUICK_MENU_FRAME_GEN && !lsfg_available);
+                        } while ((quick_menu_selection == QUICK_MENU_FRAME_GEN && !lsfg_available)
+                            || (quick_menu_selection == QUICK_MENU_CHEATS && !cheats_available));
                         if (quick_menu_overlay)
                             quick_menu_overlay->set_switch_menu_selection(quick_menu_selection);
                     }
@@ -1810,6 +1858,13 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
                                 quick_menu_overlay->set_list("Trophies", "A: open    B: back",
                                     build_trophy_group_rows(trophy_groups), 0);
                             break;
+                        case QUICK_MENU_CHEATS:
+                            if (!cheats_available)
+                                break;
+                            quick_menu_list_selection = 0;
+                            quick_menu_screen = QuickMenuScreen::Cheats;
+                            refresh_cheat_rows();
+                            break;
                         case QUICK_MENU_SETTINGS:
                             quick_menu_list_selection = 0;
                             quick_menu_screen = QuickMenuScreen::Settings;
@@ -1846,7 +1901,28 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
                         adjust_live_setting(*emuenv, quick_menu_list_selection, direction);
                         refresh_settings_rows();
                         break;
+
+                    case QuickMenuScreen::Cheats:
+                        // Guest threads are suspended by the Menu pause reason, so a cheat going off
+                        // restores its ARM writes into code nobody is running.
+                        if (quick_menu_list_selection == CHEAT_ROW_MASTER) {
+                            emuenv->cfg.enable_cheats = !emuenv->cfg.enable_cheats;
+                            cheat::set_enabled(emuenv->cheat, emuenv->cfg.enable_cheats, emuenv->mem, cheat_invalidate);
+                        } else {
+                            const auto index = static_cast<size_t>(quick_menu_list_selection - CHEAT_ROW_FIRST);
+                            if (index >= cheat_view.cheats.size())
+                                break;
+                            cheat::set_cheat_enabled(emuenv->cheat, index, !cheat_view.cheats[index].enabled,
+                                emuenv->mem, cheat_invalidate);
+                            cheats_dirty = true;
+                        }
+                        refresh_cheat_rows();
+                        break;
                     }
+                } else if ((controller.down & HidNpadButton_Y) && quick_menu_screen == QuickMenuScreen::Cheats) {
+                    if (cheat::save(emuenv->cheat, emuenv->cheat_path))
+                        cheats_dirty = false;
+                    refresh_cheat_rows();
                 }
 
                 // Starting a new screen must not inherit the previous one's

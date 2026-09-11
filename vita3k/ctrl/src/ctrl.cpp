@@ -19,6 +19,7 @@
 #include <ctrl/functions.h>
 #include <ctrl/state.h>
 
+#include <cheat/functions.h>
 #include <config/state.h>
 #include <display/functions.h>
 #include <display/state.h>
@@ -262,6 +263,7 @@ static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool n
     };
 
     if (state.overlay_input_intercepted.load(std::memory_order_relaxed) || emuenv.drop_inputs) {
+        cheat::set_buttons(emuenv.cheat, 0);
         reset_axes();
         return;
     }
@@ -282,6 +284,17 @@ static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool n
         for (const auto &[_, controller] : state.controllers) {
             apply_controller(emuenv, &buttons, axes.data(), controller.controller.get(), is_v2);
         }
+    }
+
+    // Hand the pad over in positive logic, the cheat engine needs it to evaluate `$C2` codes. Their
+    // masks are written for a handheld, whose L and R the extended API reports as L1 and R1.
+    if (port == 1) {
+        uint32_t cheat_buttons = buttons;
+        if (buttons & SCE_CTRL_L1)
+            cheat_buttons |= SCE_CTRL_L;
+        if (buttons & SCE_CTRL_R1)
+            cheat_buttons |= SCE_CTRL_R;
+        cheat::set_buttons(emuenv.cheat, cheat_buttons);
     }
 
     reset_axes();

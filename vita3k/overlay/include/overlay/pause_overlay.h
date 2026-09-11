@@ -40,7 +40,7 @@ struct list_row {
 };
 
 struct pause_overlay : public overlay {
-    static constexpr int k_menu_entries = 7;
+    static constexpr int k_menu_entries = 8;
     static constexpr int k_list_visible_rows = 5;
 
     pause_overlay();
@@ -55,12 +55,16 @@ struct pause_overlay : public overlay {
     void set_switch_menu_selection(int selected);
     void set_switch_menu_lsfg(bool available, bool enabled);
     void set_switch_menu_virtual_mouse(bool enabled);
+    // Only the colour: a game with no cheat file greys the entry out, like frame generation.
+    void set_switch_menu_cheats(bool available);
 
     // Generic list screen, used for the trophy browser and the in-game settings.
     // Passing an empty row vector returns to the quick menu.
     void set_list(const std::string &title, const std::string &subtitle,
         std::vector<list_row> rows, int selected);
     void set_list_selection(int selected);
+    // Drawn on the title row, so it stays put while the list scrolls. Cleared by set_list().
+    void set_list_status(const std::string &text);
     void close_list();
 
 private:
@@ -88,6 +92,8 @@ private:
     std::unordered_map<std::string, std::unique_ptr<image_info>> m_icon_cache;
     std::vector<list_row> m_list_rows;
     label m_list_empty_label;
+    label m_list_status;
+    std::string m_list_status_text;
     rounded_rect m_scroll_track;
     rounded_rect m_scroll_thumb;
 

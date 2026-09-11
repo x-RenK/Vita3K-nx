@@ -65,6 +65,7 @@ pause_overlay::pause_overlay() {
         "Frame generation: unavailable",
         "Virtual mouse: Off",
         "Trophies",
+        "Cheats",
         "Settings",
         "Return to launcher",
         "Exit emulator",
@@ -98,6 +99,11 @@ pause_overlay::pause_overlay() {
     m_list_empty_label.fore_color = k_text_dim;
     m_list_empty_label.set_font(default_font_name, 14);
     m_list_empty_label.align_text(overlay_element::center);
+
+    m_list_status.back_color = k_transparent;
+    m_list_status.fore_color = k_text;
+    m_list_status.set_font(default_font_name, 14);
+    m_list_status.align_text(overlay_element::right);
 
     m_scroll_track.back_color = { 0.16f, 0.17f, 0.21f, 0.85f };
     m_scroll_track.border_radius = 2;
@@ -209,6 +215,10 @@ void pause_overlay::layout_list() {
     m_list_empty_label.set_pos(card_x, static_cast<int16_t>(card_y + k_list_card_h / 2 - 12));
     m_list_empty_label.set_size(k_list_card_w, 26);
 
+    // Right-aligned on the title row; the title is centred and short, so the two do not meet.
+    m_list_status.set_pos(card_x, static_cast<int16_t>(card_y + 18));
+    m_list_status.set_size(static_cast<uint16_t>(k_list_card_w - 24), 22);
+
     const int count = static_cast<int>(m_list_rows.size());
     const bool scrollable = count > k_list_visible_rows;
     const uint16_t content_w = static_cast<uint16_t>(scrollable ? row_w - 14 : row_w);
@@ -298,6 +308,7 @@ void pause_overlay::refresh_elements() {
     if (!m_list_mode)
         return;
     m_list_empty_label.refresh();
+    m_list_status.refresh();
     m_scroll_track.refresh();
     m_scroll_thumb.refresh();
     for (auto &slot : m_list_slots) {
@@ -362,6 +373,15 @@ void pause_overlay::set_switch_menu_virtual_mouse(bool enabled) {
     overlay::refresh();
 }
 
+void pause_overlay::set_switch_menu_cheats(bool available) {
+    {
+        std::lock_guard lock(m_mutex);
+        m_menu_labels[4].fore_color = available ? k_text : k_text_disabled;
+        m_menu_labels[4].refresh();
+    }
+    overlay::refresh();
+}
+
 void pause_overlay::set_switch_menu_selection(int selected) {
     {
         std::lock_guard lock(m_mutex);
@@ -398,9 +418,24 @@ void pause_overlay::set_list(const std::string &title, const std::string &subtit
         m_title_label.set_text(title);
         m_subtitle_label.set_text(subtitle);
         m_list_empty_label.set_text("Nothing to show here");
+        // A screen that wants a status sets it after this call.
+        m_list_status_text.clear();
+        m_list_status.set_text("");
         layout();
         rebuild_list_slots();
         refresh_elements();
+    }
+    overlay::refresh();
+}
+
+void pause_overlay::set_list_status(const std::string &text) {
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_list_status_text == text)
+            return;
+        m_list_status_text = text;
+        m_list_status.set_text(text);
+        m_list_status.refresh();
     }
     overlay::refresh();
 }
@@ -458,6 +493,8 @@ compiled_resource pause_overlay::get_compiled() {
     result.add(m_title_label.get_compiled());
 
     if (m_list_mode) {
+        if (!m_list_status_text.empty())
+            result.add(m_list_status.get_compiled());
         const int count = static_cast<int>(m_list_rows.size());
         if (count == 0) {
             result.add(m_list_empty_label.get_compiled());

@@ -21,6 +21,7 @@
 // port's AndroidSessionState but without any JNI: the frontend is native C++.
 
 #include <app/session_controller.h>
+#include <cheat/functions.h>
 #include <emuenv/state.h>
 #include <util/fs.h>
 
@@ -69,3 +70,6 @@ void switch_capture_stderr();
 void switch_start_preemption_watchdog(EmuEnvState &emuenv);
 void switch_stop_preemption_watchdog();
 
+// The frontend cannot see KernelState (its header and libnx both define Mutex and Semaphore),
+// so the JIT flush a cheat toggle needs is built here.
+cheat::JitInvalidate switch_cheat_jit_invalidate(EmuEnvState &emuenv);
