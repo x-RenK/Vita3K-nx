@@ -1204,6 +1204,8 @@ spv::Id load(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFunc
         // Calculate the "at" offset.
         spv::Id idx_reg_val = b.createLoad(b.createOp(spv::OpAccessChain, b.makePointer(spv::StorageClassPrivate, type_i32), { params.indexes, b.makeIntConstant(idx_off) }), spv::NoPrecision);
 
+        // Register indexing uses only the low 16 bits.
+        idx_reg_val = b.createBinOp(spv::OpBitwiseAnd, type_i32, idx_reg_val, b.makeIntConstant(0xFFFF));
         if (op.index_scale != 1)
             idx_reg_val = b.createBinOp(spv::OpIMul, type_i32, idx_reg_val, b.makeIntConstant(op.index_scale));
         spv::Id real_idx = b.createBinOp(spv::OpIAdd, type_i32, idx_reg_val, b.makeIntConstant(add_off));
