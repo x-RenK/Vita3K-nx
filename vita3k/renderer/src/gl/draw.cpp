@@ -33,6 +33,8 @@
 
 #include <spdlog/fmt/bin_to_hex.h>
 
+#include <algorithm>
+
 namespace renderer::gl {
 static GLenum translate_primitive(SceGxmPrimitiveType primType) {
     R_PROFILE(__func__);
@@ -189,7 +191,7 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
     }
 
     for (const auto index : context.self_sampling_indices) {
-        if (context.self_sampling_textures[index].gamma_mode)
+        if (!context.self_sampling_uses_attachment[index])
             sync_texture(renderer, context, mem, index, context.self_sampling_textures[index], config);
     }
 
@@ -219,15 +221,19 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
     } else if (!context.self_sampling_indices.empty()) {
         if (features.support_texture_barrier) {
             glTextureBarrier();
-        } else {
-            glActiveTexture(GL_TEXTURE0 + context.self_sampling_indices[0]);
+        } else if (const auto direct = std::find_if(context.self_sampling_indices.begin(), context.self_sampling_indices.end(),
+                       [&](size_t index) { return context.self_sampling_uses_attachment[index]; });
+                   direct != context.self_sampling_indices.end()) {
+            glActiveTexture(GL_TEXTURE0 + *direct);
             std::uint64_t ping_pong = renderer.surface_cache.retrieve_ping_pong_color_surface_texture_handle(context.record.color_surface.data);
             if (ping_pong != 0) {
                 for (std::size_t i = 0; i < context.self_sampling_indices.size(); i++) {
-                    if (context.self_sampling_textures[context.self_sampling_indices[i]].gamma_mode)
+                    if (!context.self_sampling_uses_attachment[context.self_sampling_indices[i]])
                         continue;
                     glActiveTexture(GL_TEXTURE0 + context.self_sampling_indices[i]);
                     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(ping_pong));
+                    texture::apply_sampler_state(context.self_sampling_textures[context.self_sampling_indices[i]], GL_TEXTURE_2D,
+                        renderer.texture_cache.anisotropic_filtering, color::is_write_surface_non_linearity_filtering(gxm::get_base_format(context.record.color_surface.colorFormat)));
                 }
             }
         }

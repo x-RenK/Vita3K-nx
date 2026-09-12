@@ -81,6 +81,7 @@ namespace texture {
 
 // Textures.
 void bind_texture_without_cache(GLTextureCache &cache, const SceGxmTexture &gxm_texture, MemState &mem);
+void apply_sampler_state(const SceGxmTexture &texture, GLenum target, int anisotropic_filtering, bool force_nearest = false);
 
 // Texture formats.
 const GLint *translate_swizzle(SceGxmTextureFormat fmt);

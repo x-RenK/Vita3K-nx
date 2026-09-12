@@ -94,6 +94,7 @@ struct GLContext : public renderer::Context {
 
     std::vector<size_t> self_sampling_indices;
     std::array<SceGxmTexture, SCE_GXM_MAX_TEXTURE_UNITS * 2> self_sampling_textures{};
+    std::array<bool, SCE_GXM_MAX_TEXTURE_UNITS * 2> self_sampling_uses_attachment{};
 
     explicit GLContext();
     ~GLContext() override = default;

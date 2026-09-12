@@ -27,12 +27,12 @@ namespace renderer::gl {
 
 using namespace texture;
 
-static void apply_sampler_state(const SceGxmTexture &gxm_texture, const GLenum texture_bind_type, const int anisotropic_filtering) {
+void texture::apply_sampler_state(const SceGxmTexture &gxm_texture, const GLenum texture_bind_type, const int anisotropic_filtering, bool force_nearest) {
     const SceGxmTextureAddrMode uaddr = (SceGxmTextureAddrMode)(gxm_texture.uaddr_mode);
     const SceGxmTextureAddrMode vaddr = (SceGxmTextureAddrMode)(gxm_texture.vaddr_mode);
 
-    const GLenum min_filter = translate_minmag_filter((SceGxmTextureFilter)gxm_texture.min_filter);
-    const GLenum mag_filter = translate_minmag_filter((SceGxmTextureFilter)gxm_texture.mag_filter);
+    const GLenum min_filter = force_nearest ? GL_NEAREST : translate_minmag_filter((SceGxmTextureFilter)gxm_texture.min_filter);
+    const GLenum mag_filter = force_nearest ? GL_NEAREST : translate_minmag_filter((SceGxmTextureFilter)gxm_texture.mag_filter);
 
     glTexParameteri(texture_bind_type, GL_TEXTURE_WRAP_S, translate_wrap_mode(uaddr));
     glTexParameteri(texture_bind_type, GL_TEXTURE_WRAP_T, translate_wrap_mode(vaddr));
@@ -45,10 +45,11 @@ static void apply_sampler_state(const SceGxmTexture &gxm_texture, const GLenum t
 
     // anisotropic filtering
     // when using nearest filter, disable anisotropy as the pixels can contain data other than color
-    if (anisotropic_filtering > 1 && (min_filter != GL_NEAREST || mag_filter != GL_NEAREST))
+    if (anisotropic_filtering > 1)
         // we don't need to check for the existence of this extension because it is considered an ubiquitous extension
         // for now we apply anisotropic filtering to all textures
-        glTexParameterf(texture_bind_type, GL_TEXTURE_MAX_ANISOTROPY_EXT, static_cast<float>(anisotropic_filtering));
+        glTexParameterf(texture_bind_type, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+            (min_filter != GL_NEAREST || mag_filter != GL_NEAREST) ? static_cast<float>(anisotropic_filtering) : 1.0f);
 }
 
 bool GLTextureCache::init(const bool hashless_texture_cache, const fs::path &texture_folder, const std::string_view game_id) {

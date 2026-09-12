@@ -339,10 +339,7 @@ void sync_texture(GLState &state, GLContext &context, MemState &mem, std::size_t
         vector_utils::erase_first(context.self_sampling_indices, index);
     }
 
-    if (self_sampling && !texture.gamma_mode) {
-        texture_as_surface = context.current_color_attachment;
-        swizzle_surface = color::translate_swizzle(context.record.color_surface.colorFormat);
-    } else {
+    {
         SceGxmColorBaseFormat format_target_of_texture;
 
         std::uint16_t width = static_cast<std::uint16_t>(gxm::get_width(texture));
@@ -388,13 +385,13 @@ void sync_texture(GLState &state, GLContext &context, MemState &mem, std::size_t
         }
     }
 
+    context.self_sampling_uses_attachment[index] = self_sampling && texture_as_surface != 0
+        && texture_as_surface == context.current_color_attachment;
+
     if (texture_as_surface != 0) {
         glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texture_as_surface));
 
-        if (only_nearest) {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        }
+        texture::apply_sampler_state(texture, GL_TEXTURE_2D, state.texture_cache.anisotropic_filtering, only_nearest);
 
         if (base_format != SCE_GXM_TEXTURE_BASE_FORMAT_X8U24) {
             const GLint *swizzle = texture::translate_swizzle(format);
