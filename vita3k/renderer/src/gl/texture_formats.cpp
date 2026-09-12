@@ -477,7 +477,7 @@ GLenum translate_type(SceGxmTextureBaseFormat base_format) {
     case SCE_GXM_TEXTURE_BASE_FORMAT_S8:
         return GL_BYTE;
     case SCE_GXM_TEXTURE_BASE_FORMAT_U4U4U4U4:
-        return GL_UNSIGNED_SHORT_4_4_4_4;
+        return GL_UNSIGNED_SHORT_4_4_4_4_REV;
     case SCE_GXM_TEXTURE_BASE_FORMAT_U8U3U3U2:
         return GL_UNSIGNED_BYTE;
     case SCE_GXM_TEXTURE_BASE_FORMAT_U1U5U5U5:
