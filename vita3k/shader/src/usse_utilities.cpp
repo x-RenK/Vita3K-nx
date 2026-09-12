@@ -1255,8 +1255,6 @@ spv::Id load(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFunc
         finalize_offset = real_idx;
 
         idx_in_arr_1 = b.createBinOp(spv::OpSDiv, type_i32, real_idx, b.makeIntConstant(4));
-        idx_in_arr_2 = b.createBinOp(spv::OpSDiv, type_i32, b.createBinOp(spv::OpIAdd, type_i32, real_idx, b.makeIntConstant(3)),
-            b.makeIntConstant(4));
     }
 
     const int num_comp_in_single_float = get_packed_component_count(op.type);
@@ -1331,8 +1329,16 @@ spv::Id load(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFunc
         idx_in_arr_1 = b.makeIntConstant((op.num + shift_offset) >> 2);
     }
 
-    if (idx_in_arr_2 == spv::NoResult) {
-        idx_in_arr_2 = b.makeIntConstant((op.num + shift_offset + 3) >> 2);
+    // Do not load an unused vector past the end of the register bank.
+    const int last_word_offset = size_comp == 4 ? highest_dest_write_offset : highest_dest_write_offset / num_comp_in_single_float;
+    if (b.isConstant(finalize_offset)) {
+        idx_in_arr_2 = b.makeIntConstant((op.num + shift_offset + last_word_offset) >> 2);
+    } else if (last_word_offset == 0) {
+        idx_in_arr_2 = idx_in_arr_1;
+    } else {
+        const spv::Id type_i32 = b.makeIntType(32);
+        const spv::Id last_word = b.createBinOp(spv::OpIAdd, type_i32, finalize_offset, b.makeIntConstant(last_word_offset));
+        idx_in_arr_2 = b.createBinOp(spv::OpSDiv, type_i32, last_word, b.makeIntConstant(4));
     }
 
     std::vector<spv::Id> first_pass_operands;
