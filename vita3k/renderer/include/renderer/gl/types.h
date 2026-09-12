@@ -86,6 +86,9 @@ struct GLContext : public renderer::Context {
     std::pair<std::uint8_t *, std::size_t> vertex_uniform_buffer_storage_ptr{ nullptr, 0 };
     std::pair<std::uint8_t *, std::size_t> fragment_uniform_buffer_storage_ptr{ nullptr, 0 };
 
+    std::array<std::array<std::pair<uint8_t *, size_t>, SCE_GXM_REAL_MAX_UNIFORM_BUFFER>, 2> uniform_buffer_destinations{};
+    std::vector<uint32_t> buffer_store_readback;
+
     shader::RenderVertUniformBlock previous_vert_info;
     shader::RenderFragUniformBlock previous_frag_info;
 

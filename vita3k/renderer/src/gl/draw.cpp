@@ -249,6 +249,9 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
         glDrawElementsInstanced(mode, static_cast<GLsizei>(count), gl_type, reinterpret_cast<const void *>(index_gpu_ptr.second), instance_count);
     }
 
+    finish_buffer_stores(context, *context.record.vertex_program.get(mem)->renderer_data, true);
+    finish_buffer_stores(context, *context.record.fragment_program.get(mem)->renderer_data, false);
+
     // Restore context for normal draws
     if (context.record.is_maskupdate) {
 #ifdef __SWITCH__

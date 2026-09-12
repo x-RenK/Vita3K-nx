@@ -83,6 +83,7 @@ struct SpirvShaderParameters {
 
     // when not using buffer device address, contains the storage buffer type
     spv::Id buffer_container;
+    int buffer_dirty_member = -1;
 
     // ids for the given fields in the uniform block container
     int buffer_addresses_id;

@@ -1112,6 +1112,14 @@ static SpirvShaderParameters create_parameters(spv::Builder &b, const SceGxmProg
             buffer_container_member_types.push_back(buffer_type_arr);
         }
 
+        const bool buffer_store = !translation_state.is_vulkan && (program.program_flags & SCE_GXM_PROGRAM_FLAG_BUFFER_STORE);
+        if (buffer_store) {
+            spv_params.buffer_dirty_member = total_members;
+            const auto dirty_type = b.makeArrayType(b.makeUintType(32), b.makeUintConstant((last_base / 4 + 31) / 32), 4);
+            b.addDecoration(dirty_type, spv::DecorationArrayStride, 4);
+            buffer_container_member_types.push_back(dirty_type);
+        }
+
         spv::Id buffer_container_type = b.makeStructType(buffer_container_member_types,
             is_vert ? "vertexDataType" : "fragmentDataType");
 
@@ -1124,7 +1132,12 @@ static SpirvShaderParameters create_parameters(spv::Builder &b, const SceGxmProg
             is_vert ? "vertexData" : "fragmentData");
 
         b.addDecoration(spv_params.buffer_container, spv::DecorationRestrict);
-        b.addDecoration(spv_params.buffer_container, spv::DecorationNonWritable);
+        if (buffer_store) {
+            b.addMemberDecoration(buffer_container_type, total_members, spv::DecorationOffset, last_base);
+            b.addMemberName(buffer_container_type, total_members, "dirtyWords");
+        } else {
+            b.addDecoration(spv_params.buffer_container, spv::DecorationNonWritable);
+        }
         const int ssbo_binding = (is_vert ? 0 : 1) + (translation_state.is_vulkan ? 2 : 0);
         b.addDecoration(spv_params.buffer_container, spv::DecorationBinding, ssbo_binding);
         if (translation_state.is_vulkan)

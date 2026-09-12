@@ -357,7 +357,7 @@ void destroy_render_target_during_shutdown(State &state, std::unique_ptr<RenderT
     rt.reset();
 }
 
-void set_uniform_buffer(State &state, Context *ctx, const bool is_vertex_uniform, const int block_number, const std::uint16_t block_size, const Ptr<const void> buffer) {
+void set_uniform_buffer(State &state, Context *ctx, const bool is_vertex_uniform, const int block_number, const std::uint32_t block_size, const Ptr<const void> buffer) {
     // Calculate the number of bytes
     std::uint32_t bytes_to_copy_and_pad = ((block_size + 15) / 16) * 16;
 

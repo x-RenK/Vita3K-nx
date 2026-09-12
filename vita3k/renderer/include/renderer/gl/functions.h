@@ -36,7 +36,8 @@ SharedGLObject compile_program(GLState &renderer, GLContext &context, const GxmR
 void pre_compile_program(GLState &renderer, const ShadersHash &hashs);
 
 // Uniforms.
-bool set_uniform_buffer(GLContext &context, const ShaderProgram *program, const bool vertex_shader, const int block_num, const int size, const uint8_t *data);
+bool set_uniform_buffer(GLContext &context, const ShaderProgram *program, const bool vertex_shader, const int block_num, const int size, uint8_t *data);
+void finish_buffer_stores(GLContext &context, const ShaderProgram &program, bool vertex_shader);
 
 bool create(std::unique_ptr<renderer::State> &state, const Config &config);
 bool create(std::unique_ptr<Context> &context);

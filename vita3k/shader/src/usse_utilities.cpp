@@ -624,6 +624,49 @@ spv::Id fetch_memory(spv::Builder &b, const SpirvShaderParameters &params, Spirv
     return b.createFunctionCall(utils.fetch_memory, { addr });
 }
 
+void store_memory(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFunctions &utils, spv::Id addr, spv::Id value) {
+    if (!utils.store_memory) {
+        const auto previous_block = b.getBuildPoint();
+        const auto i32 = b.makeIntType(32);
+        const auto u32 = b.makeUintType(32);
+        const auto boolean = b.makeBoolType();
+        spv::Block *entry;
+        auto func = b.makeFunctionEntry(spv::NoPrecision, b.makeVoidType(), "storeMemory", spv::LinkageTypeMax,
+            { i32, b.makeFloatType(32) }, {}, &entry);
+        utils.store_memory = func;
+        const auto address = func->getParamId(0);
+        const auto data = func->getParamId(1);
+        const auto aligned = b.createBinOp(spv::OpIEqual, boolean,
+            b.createBinOp(spv::OpBitwiseAnd, i32, address, b.makeIntConstant(3)), b.makeIntConstant(0));
+        for (const auto &[index, buffer] : params.buffers) {
+            const auto begin = b.makeIntConstant(buffer.base);
+            const auto in_range = b.createBinOp(spv::OpLogicalAnd, boolean,
+                b.createBinOp(spv::OpSGreaterThanEqual, boolean, address, begin),
+                b.createBinOp(spv::OpSLessThanEqual, boolean, address, b.makeIntConstant(buffer.base + buffer.size - 4)));
+            spv::Builder::If match(b.createBinOp(spv::OpLogicalAnd, boolean, aligned, in_range), spv::SelectionControlMaskNone, b);
+            const auto relative = b.createBinOp(spv::OpISub, i32, address, begin);
+            const auto word = b.createBinOp(spv::OpSDiv, i32, relative, b.makeIntConstant(4));
+            const auto ptr = create_access_chain(b, spv::StorageClassStorageBuffer, params.buffer_container,
+                { b.makeIntConstant(buffer.index_in_container),
+                    b.createBinOp(spv::OpSDiv, i32, word, b.makeIntConstant(4)),
+                    b.createBinOp(spv::OpSRem, i32, word, b.makeIntConstant(4)) });
+            b.createStore(data, ptr);
+            const auto global_word = b.createBinOp(spv::OpSDiv, i32, address, b.makeIntConstant(4));
+            const auto dirty = create_access_chain(b, spv::StorageClassStorageBuffer, params.buffer_container,
+                { b.makeIntConstant(params.buffer_dirty_member),
+                    b.createBinOp(spv::OpSDiv, i32, global_word, b.makeIntConstant(32)) });
+            const auto bit = b.createBinOp(spv::OpShiftLeftLogical, u32, b.makeUintConstant(1),
+                b.createBinOp(spv::OpSRem, i32, global_word, b.makeIntConstant(32)));
+            b.createOp(spv::OpAtomicOr, u32, { dirty, b.makeUintConstant(spv::ScopeDevice), b.makeUintConstant(0), bit });
+            b.makeReturn(false);
+            match.makeEndIf();
+        }
+        b.makeReturn(false);
+        b.setBuildPoint(previous_block);
+    }
+    b.createFunctionCall(utils.store_memory, { addr, value });
+}
+
 static spv::Id make_or_get_buffer_ptr(spv::Builder &b, shader::usse::utils::SpirvUtilFunctions &utils, int nb_components, int stride = 16, bool is_write = false) {
     const int buffer_utils_idx = (stride == 4) ? 0 : nb_components;
 

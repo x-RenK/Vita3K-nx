@@ -886,8 +886,12 @@ bool USSETranslatorVisitor::vldst(
         utils::buffer_address_access(m_b, m_spirv_params, m_util_funcs, m_features, to_store, to_store_offset, base, get_data_type_size(type_to_ldst), current_number_to_fetch, -1, is_store);
     } else {
         if (is_store) {
-            LOG_ERROR("Store opcode is not supported without memory mapping");
-            return true;
+            if (m_spirv_params.buffer_dirty_member < 0 || get_data_type_size(type_to_ldst) != sizeof(uint32_t)) {
+                LOG_ERROR("Unsupported buffer store without memory mapping");
+                return true;
+            }
+            utils::store_memory(m_b, m_spirv_params, m_util_funcs, base, load(to_store, 0b1, to_store_offset));
+            continue;
         }
 
         for (int i = 0; i < total_bytes_fo_fetch / 4; ++i) {

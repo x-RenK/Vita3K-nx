@@ -414,6 +414,7 @@ bool create(std::unique_ptr<FragmentProgram> &fp, GLState &state, const SceGxmPr
     R_PROFILE(__func__);
 
     fp = std::make_unique<GLFragmentProgram>();
+    fp->buffer_store = (program.program_flags & SCE_GXM_PROGRAM_FLAG_BUFFER_STORE) != 0;
     GLFragmentProgram *frag_program_gl = reinterpret_cast<GLFragmentProgram *>(fp.get());
 
     // Translate blending.
@@ -437,6 +438,7 @@ bool create(std::unique_ptr<FragmentProgram> &fp, GLState &state, const SceGxmPr
 bool create(std::unique_ptr<VertexProgram> &vp, GLState &state, const SceGxmProgram &program) {
     R_PROFILE(__func__);
     vp = std::make_unique<GLVertexProgram>();
+    vp->buffer_store = (program.program_flags & SCE_GXM_PROGRAM_FLAG_BUFFER_STORE) != 0;
 
     return true;
 }
