@@ -265,11 +265,11 @@ void sync_stencil_data(const GxmRecordState &state, const MemState &mem) {
     }
 }
 
-void sync_polygon_mode(const SceGxmPolygonMode mode, const bool front) {
-    // TODO: Why decap this?
+void sync_polygon_mode(const GxmRecordState &state, const bool front) {
+    const auto mode = front || state.two_sided == SCE_GXM_TWO_SIDED_DISABLED
+        ? state.front_polygon_mode : state.back_polygon_mode;
     const GLint face = GL_FRONT_AND_BACK;
 
-    // Polygon Mode.
     switch (mode) {
     case SCE_GXM_POLYGON_MODE_POINT_10UV:
     case SCE_GXM_POLYGON_MODE_POINT:

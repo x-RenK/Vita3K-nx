@@ -322,7 +322,7 @@ COMMAND_SET_STATE(polygon_mode) {
 
     switch (renderer.current_backend) {
     case Backend::OpenGL:
-        gl::sync_polygon_mode(mode, is_front);
+        gl::sync_polygon_mode(render_context->record, is_front);
         break;
 
     case Backend::Vulkan:
@@ -452,7 +452,7 @@ COMMAND_SET_STATE(two_sided) {
 
     switch (renderer.current_backend) {
     case Backend::OpenGL:
-        // TODO: something should be done here
+        gl::sync_polygon_mode(render_context->record, false);
         break;
 
     case Backend::Vulkan:
