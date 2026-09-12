@@ -134,8 +134,7 @@ GLenum translate_internal_format(SceGxmColorBaseFormat base_format) {
         return GL_RG8;
 
     case SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10:
-        LOG_WARN_ONCE("Unsupported OpenGL color base format {}", log_hex(base_format));
-        return GL_RGBA8;
+        return GL_RGBA16F;
 
     default:
         LOG_ERROR("Unknown base format {}", log_hex(base_format));
@@ -183,6 +182,7 @@ GLenum translate_type(SceGxmColorBaseFormat base_format) {
         return GL_BYTE;
 
     case SCE_GXM_COLOR_BASE_FORMAT_F16F16F16F16:
+    case SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10:
         return GL_HALF_FLOAT;
 
     case SCE_GXM_COLOR_BASE_FORMAT_U2U10U10U10:
@@ -261,6 +261,7 @@ size_t bytes_per_pixel_in_gl_storage(SceGxmColorBaseFormat base_format) {
         return 4;
     case SCE_GXM_COLOR_BASE_FORMAT_F16F16F16F16:
     case SCE_GXM_COLOR_BASE_FORMAT_F32F32:
+    case SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10:
         return 8;
     default:
         break;

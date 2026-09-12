@@ -22,6 +22,7 @@
 
 #include <renderer/gl/functions.h>
 #include <renderer/gl/types.h>
+#include <renderer/texture/packed.h>
 
 #include <shader/spirv_recompiler.h>
 #include <shader/usse_program_analyzer.h>
@@ -327,7 +328,7 @@ bool GLState::init() {
         LOG_WARN("Failed to initialize overlay renderer, overlays will be disabled");
     }
 
-    shader_version = fmt::format("v{}", shader::CURRENT_VERSION);
+    shader_version = fmt::format("v{}-hdr1", shader::CURRENT_VERSION);
 
 #ifdef __SWITCH__
     // The generated GLSL differs with the mask bit, and native OpenGL shares
@@ -509,7 +510,10 @@ static std::map<SceGxmColorFormat, std::pair<GLenum, GLenum>> GXM_COLOR_FORMAT_T
     { SCE_GXM_COLOR_FORMAT_U8U8_AR, { GL_RG, GL_UNSIGNED_BYTE } },
     { SCE_GXM_COLOR_FORMAT_U8_A, { GL_RED, GL_UNSIGNED_BYTE } },
     { SCE_GXM_COLOR_FORMAT_U8_R, { GL_RED, GL_UNSIGNED_BYTE } },
-    { SCE_GXM_COLOR_FORMAT_U2F10F10F10_ABGR, { GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV } },
+    { SCE_GXM_COLOR_FORMAT_U2F10F10F10_ABGR, { GL_RGBA, GL_HALF_FLOAT } },
+    { SCE_GXM_COLOR_FORMAT_U2F10F10F10_ARGB, { GL_RGBA, GL_HALF_FLOAT } },
+    { SCE_GXM_COLOR_FORMAT_F10F10F10U2_RGBA, { GL_RGBA, GL_HALF_FLOAT } },
+    { SCE_GXM_COLOR_FORMAT_F10F10F10U2_BGRA, { GL_RGBA, GL_HALF_FLOAT } },
     { SCE_GXM_COLOR_FORMAT_U2U10U10U10_ABGR, { GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV } },
     { SCE_GXM_COLOR_FORMAT_U10U10U10U2_RGBA, { GL_BGRA, GL_UNSIGNED_INT_10_10_10_2 } },
     { SCE_GXM_COLOR_FORMAT_U10U10U10U2_BGRA, { GL_RGBA, GL_UNSIGNED_INT_10_10_10_2 } },
@@ -539,6 +543,11 @@ static bool format_need_temp_storage(const GLState &state, SceGxmColorSurface &s
         return true;
     }
 
+    if (gxm::get_base_format(surface.colorFormat) == SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10) {
+        storage.resize(needed_pixels * 4 * sizeof(uint16_t));
+        return true;
+    }
+
     if (state.res_multiplier > 1.0f) {
         storage.resize(needed_pixels * gxm::bits_per_pixel(gxm::get_base_format(surface.colorFormat)) >> 3);
         return true;
@@ -549,6 +558,31 @@ static bool format_need_temp_storage(const GLState &state, SceGxmColorSurface &s
 
 static void post_process_pixels_data(GLState &renderer, std::uint32_t *pixels, std::uint8_t *source, std::uint32_t width, std::uint32_t height, const std::uint32_t stride,
     SceGxmColorSurface &surface) {
+    if (gxm::get_base_format(surface.colorFormat) == SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10) {
+        using renderer::texture::PackedColorOrder;
+        PackedColorOrder order = PackedColorOrder::ABGR;
+        switch (surface.colorFormat) {
+        case SCE_GXM_COLOR_FORMAT_U2F10F10F10_ARGB: order = PackedColorOrder::ARGB; break;
+        case SCE_GXM_COLOR_FORMAT_F10F10F10U2_RGBA: order = PackedColorOrder::RGBA; break;
+        case SCE_GXM_COLOR_FORMAT_F10F10F10U2_BGRA: order = PackedColorOrder::BGRA; break;
+        default: break;
+        }
+        const uint32_t input_stride = renderer.res_multiplier == 1.0f ? stride : width;
+        for (uint32_t y = 0; y < surface.height; ++y) {
+            const uint32_t source_y = height == surface.height ? y : uint64_t(y) * height / surface.height;
+            for (uint32_t x = 0; x < surface.width; ++x) {
+                const uint32_t source_x = width == surface.width ? x : uint64_t(x) * width / surface.width;
+                std::array<uint16_t, 4> rgba;
+                memcpy(rgba.data(), source + (size_t(source_y) * input_stride + source_x) * sizeof(rgba), sizeof(rgba));
+                size_t offset = size_t(y) * stride + x;
+                if (surface.surfaceType == SCE_GXM_COLOR_SURFACE_TILED)
+                    offset = (size_t(y / 32) * ((stride + 31) / 32) + x / 32) * 1024 + (y % 32) * 32 + x % 32;
+                pixels[offset] = renderer::texture::pack_u2f10f10f10(rgba, order);
+            }
+        }
+        return;
+    }
+
     uint8_t *curr_input = source;
     uint8_t *curr_output = reinterpret_cast<uint8_t *>(pixels);
 
@@ -698,7 +732,8 @@ void get_surface_data(GLState &renderer, GLContext &context, uint32_t *pixels, S
     uint32_t width = surface.width;
     uint32_t height = surface.height;
 
-    const int res_multiplier = static_cast<int>(renderer.res_multiplier);
+    const float res_multiplier = gxm::get_base_format(format) == SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10
+        ? renderer.res_multiplier : static_cast<int>(renderer.res_multiplier);
     if (res_multiplier == 1) {
         glPixelStorei(GL_PACK_ROW_LENGTH, static_cast<GLint>(surface.strideInPixels));
     } else {
