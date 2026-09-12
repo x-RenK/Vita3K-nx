@@ -163,10 +163,8 @@ ProgramInput get_program_input(const SceGxmProgram &program) {
                     }
                 }
 
-                // hack (kind of) : Uncharted declares a uniform containing only a vec4 g_mSkinTransforms[96]
-                // however it accesses  g_mSkinTransforms[147] (for some default value I guess)
-                // so set the size to unbounded in the shader
-                if (var_name == "g_mSkinTransforms")
+                // These palettes are indexed beyond their declared array size.
+                if (var_name == "g_mSkinTransforms" || var_name == "gSkinningMatrices")
                     uniform_buffers[parameter.container_index].size = SCE_GXM_MAX_UB_IN_FLOAT_UNIT;
             }
             break;
