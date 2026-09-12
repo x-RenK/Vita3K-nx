@@ -135,17 +135,19 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
         // 2. Same base address, but width and height change to be larger, or format change if write. Remake a new one for both read and write situation.
         // 3. Out of cache range. In write case, create a new one, in read case, lul
         // 4. Read situation with smaller width and height, probably need to extract the needed region out.
-        const bool addr_in_range_of_cache = ((key + total_surface_size) <= (ite->first + info.total_bytes));
+        bool addr_in_range_of_cache = ((key + total_surface_size) <= (ite->first + info.total_bytes));
         const bool cache_probably_freed = ((ite->first != key) && addr_in_range_of_cache && (purpose == SurfaceTextureRetrievePurpose::WRITING));
         const bool surface_extent_changed = (info.width < width) || (info.height < height);
+        const bool surface_pitch_changed = info.pixel_stride != pixel_stride;
+        const bool surface_format_changed = base_format != info.format;
         bool surface_stat_changed = false;
 
         if (ite->first == key) {
             if (purpose == SurfaceTextureRetrievePurpose::WRITING) {
-                surface_stat_changed = surface_extent_changed || (base_format != info.format);
+                surface_stat_changed = surface_extent_changed || surface_pitch_changed || surface_format_changed;
             } else {
                 // If the extent changed but format is not the same, then the probability of it being a cast is high
-                surface_stat_changed = surface_extent_changed && (base_format == info.format);
+                surface_stat_changed = surface_extent_changed && !surface_pitch_changed && !surface_format_changed;
             }
         }
 
@@ -164,6 +166,8 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
             // Remake locally to avoid making changes to framebuffer array
             uint16_t prev_width = info.width;
             uint16_t prev_height = info.height;
+            const bool preserve_contents = surface_extent_changed && !surface_pitch_changed && !surface_format_changed
+                && prev_width <= width && prev_height <= height;
             info.width = width;
             info.height = height;
             info.original_width = original_width;
@@ -172,11 +176,16 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
             info.format = base_format;
             info.total_bytes = total_surface_size;
             info.flags = 0;
+            addr_in_range_of_cache = true;
+            if (stored_height)
+                *stored_height = info.original_height;
+            if (stored_width)
+                *stored_width = info.original_width;
 
             bool store_rawly = false;
 
             auto remake_and_apply_filters = [&](GLuint bind_texture_id) {
-                if (prev_width <= info.width && prev_height <= info.height && surface_extent_changed) {
+                if (preserve_contents) {
                     GLuint temp_texture;
                     glGenTextures(1, &temp_texture);
                     glBindTexture(GL_TEXTURE_2D, temp_texture);
@@ -219,7 +228,7 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
             };
 
             if (info.gl_expected_read_texture_view[0]) {
-                remake_and_apply_filters(info.gl_ping_pong_texture[0]);
+                remake_and_apply_filters(info.gl_expected_read_texture_view[0]);
             }
 
             if (state.features.preserve_f16_nan_as_u16 && color::is_write_surface_stored_rawly(base_format)) {
