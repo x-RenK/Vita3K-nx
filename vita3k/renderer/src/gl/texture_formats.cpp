@@ -203,6 +203,32 @@ static const GLint *translate_swizzle(SceGxmTextureSwizzleYUV422Mode mode) {
     return swizzle_yuyv_csc0;
 }
 
+GLenum linear_to_srgb(GLenum format) {
+    switch (format) {
+    case GL_RGB:
+    case GL_RGB8:
+        return GL_SRGB8;
+    case GL_RGBA:
+    case GL_RGBA8:
+        return GL_SRGB8_ALPHA8;
+    case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+        return 0x8C4D; // GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT
+    case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+        return 0x8C4E; // GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT
+    case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+        return 0x8C4F; // GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT
+    case GL_COMPRESSED_RGBA_BPTC_UNORM:
+        return GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM;
+#define ASTC_FMT(b_x, b_y) \
+    case GL_COMPRESSED_RGBA_ASTC_##b_x##x##b_y: \
+        return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_##b_x##x##b_y;
+#include "../texture/astc_formats.inc"
+#undef ASTC_FMT
+    default:
+        return format;
+    }
+}
+
 GLenum translate_internal_format(SceGxmTextureBaseFormat base_format) {
     switch (base_format) {
     // 1 Component.

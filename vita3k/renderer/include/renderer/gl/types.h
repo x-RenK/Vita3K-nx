@@ -49,6 +49,8 @@ typedef std::vector<ExcludedUniform> ExcludedUniforms; // vector instead of unor
 typedef std::map<GLuint, GLenum> UniformTypes;
 
 class GLTextureCache : public TextureCache {
+    bool texture_is_srgb = false;
+
 public:
     GLObjectArray<TextureCacheSize> textures;
 
@@ -91,6 +93,7 @@ struct GLContext : public renderer::Context {
     shader::RenderFragUniformBlock current_frag_render_info{};
 
     std::vector<size_t> self_sampling_indices;
+    std::array<SceGxmTexture, SCE_GXM_MAX_TEXTURE_UNITS * 2> self_sampling_textures{};
 
     explicit GLContext();
     ~GLContext() override = default;

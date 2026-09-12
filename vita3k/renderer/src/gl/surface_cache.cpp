@@ -82,7 +82,7 @@ void GLSurfaceCache::do_typeless_copy(const GLuint dest_texture, const GLuint so
 
 GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state, std::uint16_t width, std::uint16_t height, const std::uint16_t pixel_stride,
     const SceGxmColorBaseFormat base_format, Ptr<void> address, SurfaceTextureRetrievePurpose purpose, std::uint32_t &swizzle,
-    std::uint16_t *stored_height, std::uint16_t *stored_width) {
+    std::uint16_t *stored_height, std::uint16_t *stored_width, bool is_srgb) {
     // Create the key to access the cache struct
     const std::uint64_t key = address.address();
 
@@ -108,6 +108,8 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
     }
 
     GLenum surface_internal_format = color::translate_internal_format(base_format);
+    is_srgb = is_srgb && purpose == SurfaceTextureRetrievePurpose::READING
+        && texture::linear_to_srgb(surface_internal_format) != surface_internal_format;
     GLenum surface_upload_format = color::translate_format(base_format);
     GLenum surface_data_type = color::translate_type(base_format);
 
@@ -262,6 +264,9 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
             }
         } else if (purpose == SurfaceTextureRetrievePurpose::READING) {
             // If we read and it's still in range
+            if (is_srgb)
+                surface_internal_format = texture::linear_to_srgb(surface_internal_format);
+
             if (used_iterator != last_use_color_surface_index.end()) {
                 last_use_color_surface_index.erase(used_iterator);
             }
@@ -311,7 +316,7 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
                     return 0;
                 }
 
-                if ((start_sourced_line != 0) || (start_x != 0) || (info.width != width) || (info.height != height) || (info.format != base_format)) {
+                if ((start_sourced_line != 0) || (start_x != 0) || (info.width != width) || (info.height != height) || (info.format != base_format) || is_srgb) {
                     std::uint64_t current_time = std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
                                                      .count();
@@ -328,10 +333,10 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
                         source_data_type = color::translate_type(info.format);
                     }
 
-                    if ((base_format != info.format) || (info.height != height) || (info.width != width) || (ite->first != address.address())) {
+                    if ((base_format != info.format) || (info.height != height) || (info.width != width) || (ite->first != address.address()) || is_srgb) {
                         // Look in cast cache and grab one. The cache really does not store immediate grab on now, but rather to reduce the synchronization in the pipeline (use different texture)
                         for (std::size_t i = 0; i < casted_vec.size();) {
-                            if ((casted_vec[i]->cropped_height == height) && (casted_vec[i]->cropped_width == width) && (casted_vec[i]->cropped_y == start_sourced_line) && (casted_vec[i]->cropped_x == start_x) && (casted_vec[i]->format == base_format)) {
+                            if ((casted_vec[i]->cropped_height == height) && (casted_vec[i]->cropped_width == width) && (casted_vec[i]->cropped_y == start_sourced_line) && (casted_vec[i]->cropped_x == start_x) && (casted_vec[i]->format == base_format) && (casted_vec[i]->is_srgb == is_srgb)) {
                                 glBindTexture(GL_TEXTURE_2D, casted_vec[i]->texture[0]);
 
                                 if (color::bytes_per_pixel_in_gl_storage(base_format) == color::bytes_per_pixel_in_gl_storage(info.format)) {
@@ -388,6 +393,7 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
                     }
 
                     casted_info.format = base_format;
+                    casted_info.is_srgb = is_srgb;
                     casted_info.cropped_x = start_x;
                     casted_info.cropped_y = start_sourced_line;
                     casted_info.cropped_width = width;

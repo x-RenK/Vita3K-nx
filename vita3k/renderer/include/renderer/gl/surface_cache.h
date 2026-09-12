@@ -60,6 +60,7 @@ struct GLCastedTexture {
     std::uint32_t cropped_width = 0;
     std::uint32_t cropped_height = 0;
     SceGxmColorBaseFormat format;
+    bool is_srgb = false;
 };
 
 struct GLColorSurfaceCacheInfo : public GLSurfaceCacheInfo {
@@ -120,7 +121,7 @@ public:
 
     GLuint retrieve_color_surface_texture_handle(const State &state, std::uint16_t width, std::uint16_t height, const std::uint16_t pixel_stride,
         const SceGxmColorBaseFormat color_format, Ptr<void> address, SurfaceTextureRetrievePurpose purpose, std::uint32_t &swizzle,
-        std::uint16_t *stored_height = nullptr, std::uint16_t *stored_width = nullptr);
+        std::uint16_t *stored_height = nullptr, std::uint16_t *stored_width = nullptr, bool is_srgb = false);
     GLuint retrieve_ping_pong_color_surface_texture_handle(Ptr<void> address);
 
     GLuint retrieve_depth_stencil_texture_handle(const State &state, const MemState &mem, const SceGxmDepthStencilSurface &surface, std::int32_t force_width = -1,

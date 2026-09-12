@@ -93,6 +93,7 @@ void GLTextureCache::cleanup() {
 }
 
 void GLTextureCache::select(size_t index, const SceGxmTexture &texture) {
+    texture_is_srgb = texture.gamma_mode != 0;
     const GLuint gl_texture = textures[index];
     glBindTexture(get_gl_texture_type(texture), gl_texture);
 }
@@ -160,6 +161,9 @@ void GLTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
         format = (num_comp == 4) ? GL_RGBA : (num_comp == 2 ? GL_RG : GL_RED);
     }
 
+    if (gxm_texture.gamma_mode)
+        internal_format = linear_to_srgb(internal_format);
+
     // GXM's cube map index is same as OpenGL: right, left, top, bottom, front, back
     GLenum upload_type = GL_TEXTURE_2D;
 
@@ -222,7 +226,9 @@ void GLTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, ui
             glPixelStorei(GL_UNPACK_COMPRESSED_BLOCK_HEIGHT, block_height);
         }
 
-        const GLenum format = translate_format(base_format);
+        GLenum format = translate_format(base_format);
+        if (importing_texture ? current_info->is_srgb : texture_is_srgb)
+            format = linear_to_srgb(format);
         size_t compressed_size = renderer::texture::get_compressed_size(base_format, width, height);
         glCompressedTexSubImage2D(upload_type, mip_index, 0, 0, width, height, format, static_cast<GLsizei>(compressed_size), pixels);
 
@@ -267,7 +273,7 @@ void GLTextureCache::import_configure_impl(SceGxmTextureBaseFormat base_format, 
     apply_sampler_state(gxm_texture, texture_bind_type, anisotropic_filtering);
 
     bool compressed = gxm::is_bcn_format(base_format) || renderer::texture::is_astc_format(base_format);
-    const GLenum internal_format = translate_internal_format(base_format);
+    const GLenum internal_format = is_srgb ? linear_to_srgb(translate_internal_format(base_format)) : translate_internal_format(base_format);
     const GLenum format = translate_format(base_format);
     const GLenum type = compressed ? 0 : translate_type(base_format);
 

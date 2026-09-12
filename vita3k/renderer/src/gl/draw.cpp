@@ -188,6 +188,11 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
         glBindBufferRange(GL_UNIFORM_BUFFER, 3, context.fragment_info_uniform_buffer.handle(), allocated_buffer.second, sizeof(shader::RenderFragUniformBlock));
     }
 
+    for (const auto index : context.self_sampling_indices) {
+        if (context.self_sampling_textures[index].gamma_mode)
+            sync_texture(renderer, context, mem, index, context.self_sampling_textures[index], config);
+    }
+
     // Upload vertex stream
     sync_vertex_streams_and_attributes(context, context.record, mem, instance_count);
 
@@ -219,6 +224,8 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
             std::uint64_t ping_pong = renderer.surface_cache.retrieve_ping_pong_color_surface_texture_handle(context.record.color_surface.data);
             if (ping_pong != 0) {
                 for (std::size_t i = 0; i < context.self_sampling_indices.size(); i++) {
+                    if (context.self_sampling_textures[context.self_sampling_indices[i]].gamma_mode)
+                        continue;
                     glActiveTexture(GL_TEXTURE0 + context.self_sampling_indices[i]);
                     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(ping_pong));
                 }

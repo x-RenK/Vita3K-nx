@@ -85,6 +85,7 @@ void bind_texture_without_cache(GLTextureCache &cache, const SceGxmTexture &gxm_
 // Texture formats.
 const GLint *translate_swizzle(SceGxmTextureFormat fmt);
 GLenum translate_internal_format(SceGxmTextureBaseFormat base_format);
+GLenum linear_to_srgb(GLenum format);
 GLenum translate_format(SceGxmTextureBaseFormat base_format);
 GLenum translate_type(SceGxmTextureBaseFormat base_format);
 GLenum translate_wrap_mode(SceGxmTextureAddrMode src);

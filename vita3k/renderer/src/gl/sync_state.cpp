@@ -331,14 +331,18 @@ void sync_texture(GLState &state, GLContext &context, MemState &mem, std::size_t
     const GLint *swizzle_surface = nullptr;
     bool only_nearest = false;
 
-    if (context.record.color_surface.data.address() == data_addr) {
-        texture_as_surface = context.current_color_attachment;
-        swizzle_surface = color::translate_swizzle(context.record.color_surface.colorFormat);
-
+    const bool self_sampling = context.record.color_surface.data.address() == data_addr;
+    if (self_sampling) {
         vector_utils::push_if_not_exists(context.self_sampling_indices, index);
+        context.self_sampling_textures[index] = texture;
     } else {
         vector_utils::erase_first(context.self_sampling_indices, index);
+    }
 
+    if (self_sampling && !texture.gamma_mode) {
+        texture_as_surface = context.current_color_attachment;
+        swizzle_surface = color::translate_swizzle(context.record.color_surface.colorFormat);
+    } else {
         SceGxmColorBaseFormat format_target_of_texture;
 
         std::uint16_t width = static_cast<std::uint16_t>(gxm::get_width(texture));
@@ -365,7 +369,7 @@ void sync_texture(GLState &state, GLContext &context, MemState &mem, std::size_t
 
             texture_as_surface = state.surface_cache.retrieve_color_surface_texture_handle(
                 state, width, height, stride_in_pixels, format_target_of_texture, Ptr<void>(data_addr),
-                SurfaceTextureRetrievePurpose::READING, swizz_raw);
+                SurfaceTextureRetrievePurpose::READING, swizz_raw, nullptr, nullptr, texture.gamma_mode != 0);
 
             swizzle_surface = color::translate_swizzle(static_cast<SceGxmColorFormat>(format_target_of_texture | swizz_raw));
             only_nearest = color::is_write_surface_non_linearity_filtering(format_target_of_texture);
