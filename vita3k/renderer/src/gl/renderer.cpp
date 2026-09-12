@@ -520,6 +520,7 @@ static std::map<SceGxmColorFormat, std::pair<GLenum, GLenum>> GXM_COLOR_FORMAT_T
     { SCE_GXM_COLOR_FORMAT_F32_R, { GL_RED, GL_FLOAT } },
     { SCE_GXM_COLOR_FORMAT_F32F32_GR, { GL_RG, GL_FLOAT } },
     { SCE_GXM_COLOR_FORMAT_F11F11F10_RGB, { GL_RGB, GL_UNSIGNED_INT_10F_11F_11F_REV } },
+    { SCE_GXM_COLOR_FORMAT_F10F11F11_BGR, { GL_RGB, GL_UNSIGNED_INT_10F_11F_11F_REV } },
     { SCE_GXM_COLOR_FORMAT_SE5M9M9M9_BGR, { GL_RGB, GL_HALF_FLOAT } },
     { SCE_GXM_COLOR_FORMAT_SE5M9M9M9_RGB, { GL_BGR, GL_HALF_FLOAT } }
 };
@@ -613,6 +614,16 @@ static void post_process_pixels_data(GLState &renderer, std::uint32_t *pixels, s
 }
 
 void lookup_and_get_surface_data(GLState &renderer, MemState &mem, SceGxmColorSurface &surface) {
+    const auto format_gl = GXM_COLOR_FORMAT_TO_GL_FORMAT.find(surface.colorFormat);
+    if (format_gl == GXM_COLOR_FORMAT_TO_GL_FORMAT.end()) {
+        LOG_ERROR("Color format not implemented: {}, report this to developer", fmt::underlying(surface.colorFormat));
+        return;
+    }
+
+    std::uint32_t *pixels = surface.data.cast<std::uint32_t>().get(mem);
+    if (!pixels)
+        return;
+
     std::uint32_t swizzle = 0;
 
     GLint tex_handle = static_cast<GLint>(renderer.surface_cache.retrieve_color_surface_texture_handle(renderer, static_cast<std::uint16_t>(surface.width),
@@ -638,17 +649,7 @@ void lookup_and_get_surface_data(GLState &renderer, MemState &mem, SceGxmColorSu
         buffer_size = gxm::get_stride_in_bytes(surface.colorFormat, width) * height;
     }
 
-    auto format_gl = GXM_COLOR_FORMAT_TO_GL_FORMAT.find(format);
-    if (format_gl == GXM_COLOR_FORMAT_TO_GL_FORMAT.end()) {
-        LOG_ERROR("Color format not implemented: {}, report this to developer", fmt::underlying(format));
-        return;
-    }
-
-    std::uint32_t *pixels = surface.data.cast<std::uint32_t>().get(mem);
     std::uint8_t *temp_store = reinterpret_cast<std::uint8_t *>(pixels);
-    if (!pixels) {
-        return;
-    }
 
     std::vector<std::uint8_t> storage_v;
     if (format_need_temp_storage(renderer, surface, storage_v, width, height)) {
@@ -688,6 +689,12 @@ void get_surface_data(GLState &renderer, GLContext &context, uint32_t *pixels, S
     }
 
     SceGxmColorFormat format = surface.colorFormat;
+    const auto format_gl = GXM_COLOR_FORMAT_TO_GL_FORMAT.find(format);
+    if (format_gl == GXM_COLOR_FORMAT_TO_GL_FORMAT.end()) {
+        LOG_ERROR("Color format not implemented: {}, report this to developer", fmt::underlying(format));
+        return;
+    }
+
     uint32_t width = surface.width;
     uint32_t height = surface.height;
 
@@ -698,12 +705,6 @@ void get_surface_data(GLState &renderer, GLContext &context, uint32_t *pixels, S
         width *= res_multiplier;
         height *= res_multiplier;
         glPixelStorei(GL_PACK_ROW_LENGTH, static_cast<GLint>(width));
-    }
-
-    auto format_gl = GXM_COLOR_FORMAT_TO_GL_FORMAT.find(format);
-    if (format_gl == GXM_COLOR_FORMAT_TO_GL_FORMAT.end()) {
-        LOG_ERROR("Color format not implemented: {}, report this to developer", fmt::underlying(format));
-        return;
     }
 
     std::uint8_t *temp_store = reinterpret_cast<std::uint8_t *>(pixels);
