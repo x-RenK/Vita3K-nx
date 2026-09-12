@@ -85,8 +85,11 @@ struct GLColorSurfaceCacheInfo : public GLSurfaceCacheInfo {
 struct GLDepthStencilSurfaceCacheInfo : public GLSurfaceCacheInfo {
     SceGxmDepthStencilSurface surface;
     GLObjectArray<1> gl_texture;
+    GLObjectArray<1> gl_read_texture;
     std::int32_t width;
     std::int32_t height;
+    std::int32_t read_width = 0;
+    std::int32_t read_height = 0;
 };
 
 class GLSurfaceCache {
@@ -120,7 +123,6 @@ public:
         std::uint16_t *stored_height = nullptr, std::uint16_t *stored_width = nullptr);
     GLuint retrieve_ping_pong_color_surface_texture_handle(Ptr<void> address);
 
-    // We really can't sample this around... The only usage of this function is interally load/store from this texture.
     GLuint retrieve_depth_stencil_texture_handle(const State &state, const MemState &mem, const SceGxmDepthStencilSurface &surface, std::int32_t force_width = -1,
         std::int32_t force_height = -1, const bool is_reading = false);
     GLuint retrieve_framebuffer_handle(const State &state, const MemState &mem, SceGxmColorSurface *color, SceGxmDepthStencilSurface *depth_stencil,

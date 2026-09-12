@@ -33,9 +33,12 @@ void GLSurfaceCache::cleanup() {
 
     for (auto &ds : depth_stencil_textures) {
         ds.gl_texture.cleanup();
+        ds.gl_read_texture.cleanup();
         ds.flags = GLSurfaceCacheInfo::FLAG_FREE;
         ds.width = 0;
         ds.height = 0;
+        ds.read_width = 0;
+        ds.read_height = 0;
     }
 
     framebuffer_array.clear();
@@ -572,6 +575,9 @@ GLuint GLSurfaceCache::retrieve_depth_stencil_texture_handle(const State &state,
 
     // The whole depth stencil struct is reserved for future use
     for (std::size_t i = 0; i < depth_stencil_textures.size(); i++) {
+        if (depth_stencil_textures[i].flags & GLSurfaceCacheInfo::FLAG_FREE)
+            continue;
+
         if ((!is_stencil_only && depth_stencil_textures[i].surface.depth_data == surface.depth_data)
             || (is_stencil_only && depth_stencil_textures[i].surface.stencil_data == surface.stencil_data)) {
             found_index = i;
@@ -587,6 +593,34 @@ GLuint GLSurfaceCache::retrieve_depth_stencil_texture_handle(const State &state,
         }
 
         GLDepthStencilSurfaceCacheInfo &cached_info = depth_stencil_textures[found_index];
+        if (is_reading) {
+            if (force_width > cached_info.width || force_height > cached_info.height)
+                return 0;
+
+            if (force_width == cached_info.width && force_height == cached_info.height)
+                return cached_info.gl_texture[0];
+
+            if (!cached_info.gl_read_texture[0]
+                && !cached_info.gl_read_texture.init(glGenTextures, glDeleteTextures)) {
+                LOG_ERROR("Failed to initialize depth surface read texture");
+                return 0;
+            }
+
+            glBindTexture(GL_TEXTURE_2D, cached_info.gl_read_texture[0]);
+            if (cached_info.read_width != force_width || cached_info.read_height != force_height) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, force_width, force_height, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                cached_info.read_width = force_width;
+                cached_info.read_height = force_height;
+            }
+
+            // Normalized texture coordinates must cover the requested extent, not the full attachment.
+            glCopyImageSubData(cached_info.gl_texture[0], GL_TEXTURE_2D, 0, 0, 0, 0,
+                cached_info.gl_read_texture[0], GL_TEXTURE_2D, 0, 0, 0, 0, force_width, force_height, 1);
+            return cached_info.gl_read_texture[0];
+        }
+
         bool need_remake = false;
         if (cached_info.width < force_width) {
             cached_info.width = force_width;
@@ -628,6 +662,9 @@ GLuint GLSurfaceCache::retrieve_depth_stencil_texture_handle(const State &state,
 
         last_use_depth_stencil_surface_index.erase(last_use_depth_stencil_surface_index.begin());
         depth_stencil_textures[index].flags = GLSurfaceCacheInfo::FLAG_FREE;
+        depth_stencil_textures[index].gl_read_texture.cleanup();
+        depth_stencil_textures[index].read_width = 0;
+        depth_stencil_textures[index].read_height = 0;
 
         found_index = index;
     }
@@ -661,6 +698,8 @@ GLuint GLSurfaceCache::retrieve_depth_stencil_texture_handle(const State &state,
 
     glBindTexture(GL_TEXTURE_2D, depth_stencil_textures[found_index].gl_texture[0]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, force_width, force_height, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
     return depth_stencil_textures[found_index].gl_texture[0];
 }
