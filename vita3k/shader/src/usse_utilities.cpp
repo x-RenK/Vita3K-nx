@@ -1520,9 +1520,16 @@ void store(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFuncti
         std::vector<spv::Id> composites;
         spv::Id vec_comp_type = utils::unwrap_type(b, b.getTypeId(source));
         int source_value_taken_count = 0;
+        int last_swizz_on = 4;
+        if (dest.type == DataType::F16) {
+            if (!dest_mask)
+                return;
+            while (!(dest_mask & (1 << (last_swizz_on - 1))))
+                last_swizz_on--;
+        }
 
         // We need to pack source
-        for (auto i = 0; i < 4 - nearest_swizz_on; i += num_comp_in_float) {
+        for (auto i = 0; i < last_swizz_on - nearest_swizz_on; i += num_comp_in_float) {
             // Shuffle to get the type out
             std::vector<spv::Id> ops;
             for (auto j = 0; j < num_comp_in_float; j++) {
@@ -1532,6 +1539,8 @@ void store(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFuncti
                     } else {
                         ops.push_back(extract_vector_component(b, vec_comp_type, source, b.makeIntConstant(std::min(source_value_taken_count++, (int)total_comp_source - 1))));
                     }
+                } else if (dest.type == DataType::F16) {
+                    ops.push_back(b.makeFloatConstant(0.0f));
                 } else {
                     if (elem == spv::NoResult) {
                         // Replace it
@@ -1550,6 +1559,21 @@ void store(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFuncti
             spv::Id result_type = utils::make_vector_or_scalar_type(b, vec_comp_type, (int)ops.size());
             spv::Id result = ops.size() == 1 ? ops[0] : b.createCompositeConstruct(result_type, ops);
             result = pack_one(b, utils, features, result, dest.type);
+
+            if (dest.type == DataType::F16) {
+                const uint32_t lanes = (dest_mask >> (nearest_swizz_on + i)) & 3;
+                if (lanes != 3) {
+                    // Unwritten halves may hold integer bits, including half-float NaN encodings.
+                    const uint32_t mask = lanes == 1 ? 0xFFFF : 0xFFFF0000;
+                    const int offset = insert_offset + (nearest_swizz_on + i) / 2;
+                    const spv::Id pointer = b.createOp(spv::OpAccessChain, comp_type, { bank_base, b.makeIntConstant(offset >> 2) });
+                    const spv::Id old = extract_vector_component(b, type_f32, b.createLoad(pointer, spv::NoPrecision), b.makeIntConstant(offset % 4));
+                    const spv::Id u32 = b.makeUintType(32);
+                    const spv::Id kept = b.createBinOp(spv::OpBitwiseAnd, u32, b.createUnaryOp(spv::OpBitcast, u32, old), b.makeUintConstant(~mask));
+                    const spv::Id written = b.createBinOp(spv::OpBitwiseAnd, u32, b.createUnaryOp(spv::OpBitcast, u32, result), b.makeUintConstant(mask));
+                    result = b.createUnaryOp(spv::OpBitcast, type_f32, b.createBinOp(spv::OpBitwiseOr, u32, kept, written));
+                }
+            }
 
             composites.push_back(result);
 
