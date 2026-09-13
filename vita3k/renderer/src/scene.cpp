@@ -184,6 +184,11 @@ COMMAND(handle_sync_surface_data) {
         renderer.notification_ready.notify_all();
     };
 
+    if (renderer.current_backend == Backend::OpenGL) {
+        auto &context = *static_cast<gl::GLContext *>(render_context);
+        context.visibility_queries.resolve(mem);
+    }
+
     if (renderer.disable_surface_sync)
         // do it as soon as possible
         signal_notifications();

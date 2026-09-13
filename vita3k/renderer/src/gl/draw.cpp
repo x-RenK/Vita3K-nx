@@ -244,11 +244,14 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
     const GLenum mode = translate_primitive(type);
     const GLenum gl_type = format == SCE_GXM_INDEX_FORMAT_U16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 
+    context.visibility_queries.begin_draw(renderer.res_multiplier);
     if (instance_count == 1) {
         glDrawElements(mode, static_cast<GLsizei>(count), gl_type, reinterpret_cast<const void *>(index_gpu_ptr.second));
     } else {
         glDrawElementsInstanced(mode, static_cast<GLsizei>(count), gl_type, reinterpret_cast<const void *>(index_gpu_ptr.second), instance_count);
     }
+
+    context.visibility_queries.end_draw();
 
     finish_buffer_stores(context, *context.record.vertex_program.get(mem)->renderer_data, true);
     finish_buffer_stores(context, *context.record.fragment_program.get(mem)->renderer_data, false);

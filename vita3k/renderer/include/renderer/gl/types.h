@@ -23,6 +23,7 @@
 #include <util/hash.h>
 
 #include <renderer/gl/ring_buffer.h>
+#include <renderer/gl/visibility.h>
 #include <renderer/texture_cache.h>
 #include <shader/uniform_block.h>
 
@@ -102,6 +103,8 @@ struct GLContext : public renderer::Context {
 
     shader::RenderVertUniformBlock current_vert_render_info{};
     shader::RenderFragUniformBlock current_frag_render_info{};
+
+    VisibilityQueries visibility_queries;
 
     std::vector<size_t> self_sampling_indices;
     std::array<SceGxmTexture, SCE_GXM_MAX_TEXTURE_UNITS * 2> self_sampling_textures{};

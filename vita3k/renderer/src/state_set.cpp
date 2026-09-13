@@ -520,6 +520,8 @@ COMMAND_SET_STATE(visibility_buffer) {
 
     if (renderer.current_backend == Backend::Vulkan) {
         vulkan::sync_visibility_buffer(*reinterpret_cast<vulkan::VKContext *>(render_context), buffer, stride);
+    } else if (renderer.current_backend == Backend::OpenGL) {
+        static_cast<gl::GLContext *>(render_context)->visibility_queries.set_buffer(buffer, stride);
     }
 }
 
@@ -531,6 +533,8 @@ COMMAND_SET_STATE(visibility_index) {
 
     if (renderer.current_backend == Backend::Vulkan) {
         vulkan::sync_visibility_index(*reinterpret_cast<vulkan::VKContext *>(render_context), enable, index, is_increment);
+    } else if (renderer.current_backend == Backend::OpenGL) {
+        static_cast<gl::GLContext *>(render_context)->visibility_queries.set_index(enable, index, is_increment);
     }
 }
 

@@ -15,6 +15,7 @@ add_library(
 	src/gl/texture_formats.cpp
 	src/gl/texture.cpp
 	src/gl/uniforms.cpp
+	src/gl/visibility.cpp
 
 	src/vulkan/allocator.cpp
 	src/vulkan/context.cpp
