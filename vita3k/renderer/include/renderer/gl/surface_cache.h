@@ -82,6 +82,14 @@ struct GLColorSurfaceCacheInfo : public GLSurfaceCacheInfo {
     GLObjectArray<1> gl_expected_read_texture_view;
 
     std::vector<std::unique_ptr<GLCastedTexture>> casted_textures;
+    // The texture this surface last gave up. A game that alternates two formats at one address
+    // every frame swaps between the two instead of allocating and freeing every time.
+    GLObjectArray<1> alternate_texture;
+    GLObjectArray<1> alternate_srgb_texture;
+    GLenum alternate_internal_format = 0;
+    std::uint16_t alternate_width = 0;
+    std::uint16_t alternate_height = 0;
+    bool alternate_rawly = false;
 };
 
 struct GLDepthStencilSurfaceCacheInfo : public GLSurfaceCacheInfo {

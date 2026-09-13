@@ -243,6 +243,7 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
         } else if (surface_stat_changed) {
             uint16_t prev_width = info.width;
             uint16_t prev_height = info.height;
+            const SceGxmColorBaseFormat prev_format = info.format;
             const bool preserve_contents = surface_extent_changed && !surface_pitch_changed && !surface_format_changed
                 && prev_width <= width && prev_height <= height;
             info.width = width;
@@ -318,10 +319,17 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
 
             // This handles some situation where game may stores texture in a larger texture then rebind it
             if (info.gl_srgb_texture[0] || surface_internal_format == GL_RGBA8) {
+                const bool prev_rawly = state.features.preserve_f16_nan_as_u16 && color::is_write_surface_stored_rawly(prev_format);
+                const GLenum prev_internal_format = prev_rawly ? color::get_raw_store_internal_type(prev_format) : color::translate_internal_format(prev_format);
                 GLColorSurfaceCacheInfo replacement;
                 replacement.width = width;
                 replacement.height = height;
-                if (!allocate_color_texture(replacement, surface_internal_format, surface_upload_format, surface_data_type, store_rawly)) {
+                const bool reuse_alternate = info.alternate_texture[0] && info.alternate_internal_format == surface_internal_format
+                    && info.alternate_width == width && info.alternate_height == height && info.alternate_rawly == store_rawly;
+                if (reuse_alternate) {
+                    replacement.gl_texture.swap(info.alternate_texture);
+                    replacement.gl_srgb_texture.swap(info.alternate_srgb_texture);
+                } else if (!allocate_color_texture(replacement, surface_internal_format, surface_upload_format, surface_data_type, store_rawly)) {
                     LOG_ERROR("Failed to resize color surface texture!");
                     return 0;
                 }
@@ -331,6 +339,14 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
                 info.gl_texture.swap(replacement.gl_texture);
                 info.gl_srgb_texture.swap(replacement.gl_srgb_texture);
                 replace_color_texture(state, replacement.gl_texture[0], info, store_rawly);
+                // replacement now holds the texture just given up; keep it, and let whatever the
+                // alternate slot held before (if it was not reused) go out of scope instead.
+                info.alternate_texture.swap(replacement.gl_texture);
+                info.alternate_srgb_texture.swap(replacement.gl_srgb_texture);
+                info.alternate_internal_format = prev_internal_format;
+                info.alternate_width = prev_width;
+                info.alternate_height = prev_height;
+                info.alternate_rawly = prev_rawly;
             } else {
                 remake_and_apply_filters(info.gl_texture[0]);
             }
