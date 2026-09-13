@@ -388,6 +388,7 @@ void sync_texture(GLState &state, GLContext &context, MemState &mem, std::size_t
     context.self_sampling_uses_attachment[index] = self_sampling && texture_as_surface != 0
         && texture_as_surface == context.current_color_attachment;
 
+    context.bound_surface_textures[index] = static_cast<GLuint>(texture_as_surface);
     if (texture_as_surface != 0) {
         glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texture_as_surface));
 

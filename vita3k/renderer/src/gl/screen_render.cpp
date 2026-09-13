@@ -162,8 +162,12 @@ void ScreenRenderer::render(const SceFVector2 &viewport_pos, const SceFVector2 &
 
     const auto &shader = current_shader();
 
-    const GLint posAttrib = glGetAttribLocation(*shader, "position_vertex");
-    const GLint uvAttrib = glGetAttribLocation(*shader, "uv_vertex");
+    auto attribs = m_attrib_locations.find(*shader);
+    if (attribs == m_attrib_locations.end()) {
+        attribs = m_attrib_locations.emplace(*shader, std::make_pair(glGetAttribLocation(*shader, "position_vertex"), glGetAttribLocation(*shader, "uv_vertex"))).first;
+    }
+    const GLint posAttrib = attribs->second.first;
+    const GLint uvAttrib = attribs->second.second;
 
     glUseProgram(*shader);
     glBindVertexArray(m_vao);

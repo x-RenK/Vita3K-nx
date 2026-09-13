@@ -15,6 +15,9 @@
 // with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+#include <cstring>
+#include <memory>
+
 #include <renderer/functions.h>
 #include <renderer/profile.h>
 
@@ -202,6 +205,27 @@ void GLTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
 
 void GLTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height, uint32_t mip_index, const void *pixels, int face, uint32_t pixels_per_stride) {
     R_PROFILE(__func__);
+    // A client-memory upload makes glthread drain its queue and run the pending batch on this
+    // thread. Copied into the unpack ring, the upload is just another queued command. The copy
+    // covers exactly the rows GL will read: whole strides, and the last row only to its width.
+    const auto stage = [&](std::size_t row_bytes, std::size_t stride_bytes, std::size_t rows) -> const void * {
+        if (!unpack_ring_buffer)
+            unpack_ring_buffer = std::make_unique<RingBuffer>(GL_PIXEL_UNPACK_BUFFER, std::size_t(64) * 1024 * 1024);
+        const std::size_t size = rows ? (rows - 1) * stride_bytes + row_bytes : 0;
+        const auto [destination, offset] = unpack_ring_buffer->allocate(size);
+        if (!destination || !size) {
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            return pixels;
+        }
+        std::memcpy(destination, pixels, size);
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpack_ring_buffer->handle());
+        return reinterpret_cast<const void *>(static_cast<std::uintptr_t>(offset));
+    };
+    const auto unstage = [&]() {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        if (unpack_ring_buffer)
+            unpack_ring_buffer->draw_call_done();
+    };
 
     GLenum upload_type = GL_TEXTURE_2D;
     if (face > 0)
@@ -231,7 +255,15 @@ void GLTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, ui
         if (importing_texture ? current_info->is_srgb : texture_is_srgb)
             format = linear_to_srgb(format);
         size_t compressed_size = renderer::texture::get_compressed_size(base_format, width, height);
-        glCompressedTexSubImage2D(upload_type, mip_index, 0, 0, width, height, format, static_cast<GLsizei>(compressed_size), pixels);
+        const bool bcn = gxm::is_bcn_format(base_format);
+        const auto [astc_width, astc_height] = gxm::get_block_size(base_format);
+        const std::size_t block_width = bcn ? 4 : astc_width;
+        const std::size_t block_height = bcn ? 4 : astc_height;
+        const std::size_t block_bytes = bcn ? ((base_format == SCE_GXM_TEXTURE_BASE_FORMAT_UBC1 || base_format == SCE_GXM_TEXTURE_BASE_FORMAT_UBC4 || base_format == SCE_GXM_TEXTURE_BASE_FORMAT_SBC4) ? 8 : 16) : 16;
+        const void *source = stage((width + block_width - 1) / block_width * block_bytes,
+            (pixels_per_stride + block_width - 1) / block_width * block_bytes, (height + block_height - 1) / block_height);
+        glCompressedTexSubImage2D(upload_type, mip_index, 0, 0, width, height, format, static_cast<GLsizei>(compressed_size), source);
+        unstage();
 
         glPixelStorei(GL_UNPACK_COMPRESSED_BLOCK_SIZE, 0);
         glPixelStorei(GL_UNPACK_COMPRESSED_BLOCK_WIDTH, 0);
@@ -242,7 +274,10 @@ void GLTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, ui
 
         const GLenum format = translate_format(base_format);
         const GLenum type = translate_type(base_format);
-        glTexSubImage2D(upload_type, mip_index, 0, 0, width, height, format, type, pixels);
+        const std::size_t bits = gxm::bits_per_pixel(base_format);
+        const void *source = stage((width * bits + 7) / 8, (pixels_per_stride * bits + 7) / 8, height);
+        glTexSubImage2D(upload_type, mip_index, 0, 0, width, height, format, type, source);
+        unstage();
 
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     }

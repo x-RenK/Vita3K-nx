@@ -21,6 +21,8 @@
 #include <util/fs.h>
 #include <util/types.h>
 
+#include <unordered_map>
+
 namespace renderer::gl {
 
 class ScreenRenderer {
@@ -60,6 +62,8 @@ private:
 
     GLuint m_vao{ 0 };
     GLuint m_vbo{ 0 };
+    // Attribute locations per program; querying them is a glthread sync.
+    std::unordered_map<GLuint, std::pair<GLint, GLint>> m_attrib_locations;
     SharedGLObject m_render_shader_nofilter;
     SharedGLObject m_render_shader_fxaa;
     SharedGLObject m_render_shader_bicubic;

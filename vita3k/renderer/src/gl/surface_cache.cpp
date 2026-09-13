@@ -50,10 +50,9 @@ bool GLSurfaceCache::allocate_color_texture(GLColorSurfaceCacheInfo &info, GLenu
 }
 
 void GLSurfaceCache::replace_color_texture(const State &state, GLuint old_texture, const GLColorSurfaceCacheInfo &info, bool store_rawly) {
-    GLint framebuffer, active_texture, texture_units;
+    GLint framebuffer, active_texture;
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
     glGetIntegerv(GL_ACTIVE_TEXTURE, &active_texture);
-    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &texture_units);
 
     const GLuint attachment = info.gl_srgb_texture[0] ? info.gl_srgb_texture[0] : info.gl_texture[0];
     std::vector<uint64_t> keys;
@@ -74,37 +73,22 @@ void GLSurfaceCache::replace_color_texture(const State &state, GLuint old_textur
     }
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
 
-    glBindTexture(GL_TEXTURE_2D, old_texture);
-    constexpr GLenum parameters[] = { GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER,
-        GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R, GL_TEXTURE_SWIZZLE_RGBA };
-    for (const auto parameter : parameters) {
-        GLint value[4];
-        glBindTexture(GL_TEXTURE_2D, old_texture);
-        glGetTexParameteriv(GL_TEXTURE_2D, parameter, value);
-        glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
-        glTexParameteriv(GL_TEXTURE_2D, parameter, value);
-    }
-    constexpr GLenum float_parameters[] = { GL_TEXTURE_MIN_LOD, GL_TEXTURE_MAX_LOD,
-        GL_TEXTURE_LOD_BIAS, GL_TEXTURE_MAX_ANISOTROPY_EXT };
-    for (const auto parameter : float_parameters) {
-        if (parameter == GL_TEXTURE_MAX_ANISOTROPY_EXT && !GLAD_GL_EXT_texture_filter_anisotropic)
-            continue;
-        GLfloat value;
-        glBindTexture(GL_TEXTURE_2D, old_texture);
-        glGetTexParameterfv(GL_TEXTURE_2D, parameter, &value);
-        glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
-        glTexParameterf(GL_TEXTURE_2D, parameter, value);
-    }
+    // Sampler parameters are re-applied by every bind through sync_texture, and the swizzle is
+    // set there too, so nothing needs to be queried off the old texture.
+    glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
     if (store_rawly) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
-    for (GLint unit = 0; unit < texture_units; ++unit) {
-        glActiveTexture(GL_TEXTURE0 + unit);
-        GLint bound;
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
-        if (static_cast<GLuint>(bound) == old_texture)
+    // Only sync_texture binds surface textures to sampling units, and it records what it bound.
+    if (auto *context = static_cast<GLContext *>(state.context)) {
+        for (std::size_t unit = 0; unit < context->bound_surface_textures.size(); ++unit) {
+            if (context->bound_surface_textures[unit] != old_texture)
+                continue;
+            glActiveTexture(static_cast<GLenum>(GL_TEXTURE0 + unit));
             glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
+            context->bound_surface_textures[unit] = info.gl_texture[0];
+        }
     }
     glActiveTexture(active_texture);
 

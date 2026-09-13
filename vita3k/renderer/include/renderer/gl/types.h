@@ -28,6 +28,7 @@
 
 #include <map>
 #include <memory>
+#include <memory>
 #include <vector>
 
 struct SceGxmProgramParameter;
@@ -61,6 +62,10 @@ public:
     void upload_texture_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height, uint32_t mip_index, const void *pixels, int face, uint32_t pixels_per_stride) override;
 
     void import_configure_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height, bool is_srgb, uint16_t nb_components, uint16_t mipcount, bool swap_rb) override;
+
+    // Uploads are staged here so they need no client memory when GL executes them; created on the
+    // first upload, when a context is current.
+    std::unique_ptr<RingBuffer> unpack_ring_buffer;
 };
 
 struct GLRenderTarget;
@@ -82,6 +87,9 @@ struct GLContext : public renderer::Context {
     GLuint current_framebuffer{ 0 };
     GLuint current_color_attachment{ 0 };
     GLuint current_framebuffer_height{ 0 };
+    // The surface-cache texture bound on each GXM unit, or 0 when the unit holds a texture-cache
+    // texture. Lets a surface be rebound after replacement without querying every unit.
+    std::array<GLuint, SCE_GXM_MAX_TEXTURE_UNITS * 2> bound_surface_textures{};
 
     std::pair<std::uint8_t *, std::size_t> vertex_uniform_buffer_storage_ptr{ nullptr, 0 };
     std::pair<std::uint8_t *, std::size_t> fragment_uniform_buffer_storage_ptr{ nullptr, 0 };
