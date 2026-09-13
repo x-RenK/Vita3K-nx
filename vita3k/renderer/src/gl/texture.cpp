@@ -30,12 +30,20 @@ namespace renderer::gl {
 
 using namespace texture;
 
-void texture::apply_sampler_state(const SceGxmTexture &gxm_texture, const GLenum texture_bind_type, const int anisotropic_filtering, bool force_nearest) {
+void texture::apply_sampler_state(const SceGxmTexture &gxm_texture, const GLenum texture_bind_type, const int anisotropic_filtering, bool force_nearest, bool has_mipmaps) {
     const SceGxmTextureAddrMode uaddr = (SceGxmTextureAddrMode)(gxm_texture.uaddr_mode);
     const SceGxmTextureAddrMode vaddr = (SceGxmTextureAddrMode)(gxm_texture.vaddr_mode);
 
-    const GLenum min_filter = force_nearest ? GL_NEAREST : translate_minmag_filter((SceGxmTextureFilter)gxm_texture.min_filter);
     const GLenum mag_filter = force_nearest ? GL_NEAREST : translate_minmag_filter((SceGxmTextureFilter)gxm_texture.mag_filter);
+    const bool strided = gxm_texture.texture_type() == SCE_GXM_TEXTURE_LINEAR_STRIDED;
+    const GLenum texel_filter = strided ? mag_filter
+                                      : force_nearest ? GL_NEAREST : translate_minmag_filter((SceGxmTextureFilter)gxm_texture.min_filter);
+    GLenum min_filter = texel_filter;
+    if (has_mipmaps && !force_nearest && !strided) {
+        min_filter = texel_filter == GL_LINEAR
+            ? (gxm_texture.mip_filter ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST)
+            : (gxm_texture.mip_filter ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
+    }
 
     glTexParameteri(texture_bind_type, GL_TEXTURE_WRAP_S, translate_wrap_mode(uaddr));
     glTexParameteri(texture_bind_type, GL_TEXTURE_WRAP_T, translate_wrap_mode(vaddr));
@@ -52,7 +60,7 @@ void texture::apply_sampler_state(const SceGxmTexture &gxm_texture, const GLenum
         // we don't need to check for the existence of this extension because it is considered an ubiquitous extension
         // for now we apply anisotropic filtering to all textures
         glTexParameterf(texture_bind_type, GL_TEXTURE_MAX_ANISOTROPY_EXT,
-            (min_filter != GL_NEAREST || mag_filter != GL_NEAREST) ? static_cast<float>(anisotropic_filtering) : 1.0f);
+            (texel_filter != GL_NEAREST || mag_filter != GL_NEAREST) ? static_cast<float>(anisotropic_filtering) : 1.0f);
 }
 
 bool GLTextureCache::init(const bool hashless_texture_cache, const fs::path &texture_folder, const std::string_view game_id) {
@@ -130,7 +138,6 @@ void GLTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
 
     const GLenum texture_bind_type = get_gl_texture_type(gxm_texture);
 
-    // TODO Support mip-mapping.
     if (mip_count)
         glTexParameteri(texture_bind_type, GL_TEXTURE_MAX_LEVEL, mip_count - 1);
 
@@ -142,7 +149,7 @@ void GLTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
     glTexParameteriv(texture_bind_type, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
 #endif
 
-    apply_sampler_state(gxm_texture, texture_bind_type, anisotropic_filtering);
+    apply_sampler_state(gxm_texture, texture_bind_type, anisotropic_filtering, false, mip_count > 1);
 
     const auto texture_type = gxm_texture.texture_type();
     const auto base_fmt = gxm::get_base_format(fmt);
@@ -306,7 +313,7 @@ void GLTextureCache::import_configure_impl(SceGxmTextureBaseFormat base_format, 
     glTexParameteriv(texture_bind_type, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
 #endif
 
-    apply_sampler_state(gxm_texture, texture_bind_type, anisotropic_filtering);
+    apply_sampler_state(gxm_texture, texture_bind_type, anisotropic_filtering, false, mipcount > 1);
 
     bool compressed = gxm::is_bcn_format(base_format) || renderer::texture::is_astc_format(base_format);
     const GLenum internal_format = is_srgb ? linear_to_srgb(translate_internal_format(base_format)) : translate_internal_format(base_format);
