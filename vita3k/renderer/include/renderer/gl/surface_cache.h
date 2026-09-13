@@ -77,9 +77,11 @@ struct GLColorSurfaceCacheInfo : public GLSurfaceCacheInfo {
     Ptr<void> data;
     bool is_ping_pong_dirty;
     GLObjectArray<1> gl_texture;
+    GLObjectArray<1> raw_texture;
+    bool raw_filled = false;
+    bool raw_blended = false;
     GLObjectArray<1> gl_srgb_texture;
     GLObjectArray<1> gl_ping_pong_texture;
-    GLObjectArray<1> gl_expected_read_texture_view;
 
     std::vector<std::unique_ptr<GLCastedTexture>> casted_textures;
     // The texture this surface last gave up. A game that alternates two formats at one address
@@ -89,7 +91,6 @@ struct GLColorSurfaceCacheInfo : public GLSurfaceCacheInfo {
     GLenum alternate_internal_format = 0;
     std::uint16_t alternate_width = 0;
     std::uint16_t alternate_height = 0;
-    bool alternate_rawly = false;
 };
 
 struct GLDepthStencilSurfaceCacheInfo : public GLSurfaceCacheInfo {
@@ -119,8 +120,9 @@ private:
     const GLRenderTarget *target = nullptr;
 
 private:
-    bool allocate_color_texture(GLColorSurfaceCacheInfo &info, GLenum internal_format, GLenum upload_format, GLenum data_type, bool store_rawly);
-    void replace_color_texture(const State &state, GLuint old_texture, const GLColorSurfaceCacheInfo &info, bool store_rawly);
+    void attach_raw_texture(GLuint framebuffer, Address address);
+    bool allocate_color_texture(GLColorSurfaceCacheInfo &info, GLenum internal_format, GLenum upload_format, GLenum data_type);
+    void replace_color_texture(const State &state, GLuint old_texture, const GLColorSurfaceCacheInfo &info);
 
     void do_typeless_copy(const GLuint dest_texture, const GLuint source_texture, const GLenum dest_internal,
         const GLenum dest_upload_format, const GLenum dest_type, const GLenum source_format, const GLenum source_type,
@@ -130,6 +132,8 @@ public:
     explicit GLSurfaceCache();
 
     void cleanup();
+    GLuint raw_texture_for_surface(Address address, bool require_valid = true) const;
+    void mark_raw_surface_draw(Address address, bool blended);
 
     GLuint retrieve_color_surface_texture_handle(const State &state, std::uint16_t width, std::uint16_t height, const std::uint16_t pixel_stride,
         const SceGxmColorBaseFormat color_format, Ptr<void> address, SurfaceTextureRetrievePurpose purpose, std::uint32_t &swizzle,

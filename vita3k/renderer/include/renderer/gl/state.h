@@ -37,6 +37,7 @@ struct GLState : public renderer::State {
 
     GLTextureCache texture_cache;
     GLSurfaceCache surface_cache;
+    GLObjectArray<1> raw_dummy_texture;
 
     ScreenRenderer screen_renderer;
     OverlayRenderer overlay_renderer;

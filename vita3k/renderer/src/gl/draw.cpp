@@ -104,19 +104,15 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
 
     glUseProgram(program_id);
 
-    const bool use_raw_image = renderer.features.preserve_f16_nan_as_u16 && color::is_write_surface_stored_rawly(gxm::get_base_format(context.record.color_surface.colorFormat));
+    const GLuint raw_attachment = renderer.surface_cache.raw_texture_for_surface(context.record.color_surface.data.address(), false);
+    const bool use_raw_image = raw_attachment && renderer.surface_cache.raw_texture_for_surface(context.record.color_surface.data.address());
 
     const SceGxmColorBaseFormat base_format = gxm::get_base_format(context.record.color_surface.colorFormat);
     const GLenum surface_format = color::translate_internal_format(base_format);
 
     if (fragment_program_gxp.is_frag_color_used() && features.is_programmable_blending_need_to_bind_color_attachment()) {
-        if (use_raw_image) {
-            glBindImageTexture(shader::COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE, context.current_color_attachment, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16UI);
-            glBindImageTexture(shader::COLOR_ATTACHMENT_TEXTURE_SLOT_IMAGE, 0, 0, GL_FALSE, 0, GL_READ_WRITE, surface_format);
-        } else {
-            glBindImageTexture(shader::COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16UI);
-            glBindImageTexture(shader::COLOR_ATTACHMENT_TEXTURE_SLOT_IMAGE, context.current_color_attachment, 0, GL_FALSE, 0, GL_READ_WRITE, surface_format);
-        }
+        glBindImageTexture(shader::COLOR_ATTACHMENT_RAW_TEXTURE_SLOT_IMAGE, raw_attachment ? raw_attachment : renderer.raw_dummy_texture[0], 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16UI);
+        glBindImageTexture(shader::COLOR_ATTACHMENT_TEXTURE_SLOT_IMAGE, context.current_color_attachment, 0, GL_FALSE, 0, GL_READ_WRITE, surface_format);
     }
 
     if (renderer.features.use_mask_bit)
@@ -252,6 +248,10 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
     }
 
     context.visibility_queries.end_draw();
+    const auto &fragment = *static_cast<const GLFragmentProgram *>(context.record.fragment_program.get(mem)->renderer_data.get());
+    if (raw_attachment && !context.record.is_maskupdate && !both_side_fragment_program_disabled
+        && (fragment.color_mask_red || fragment.color_mask_green || fragment.color_mask_blue || fragment.color_mask_alpha))
+        renderer.surface_cache.mark_raw_surface_draw(context.record.color_surface.data.address(), fragment.blend_enabled);
 
     finish_buffer_stores(context, *context.record.vertex_program.get(mem)->renderer_data, true);
     finish_buffer_stores(context, *context.record.fragment_program.get(mem)->renderer_data, false);

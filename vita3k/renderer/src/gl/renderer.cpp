@@ -312,11 +312,18 @@ bool create(std::unique_ptr<State> &state, const Config &config) {
     gl_state.features.use_mask_bit = true;
 #endif
 
-
+    gl_state.features.preserve_f16_nan_as_u16 = true;
     return gl_state.init();
 }
 
 bool GLState::init() {
+    if (!raw_dummy_texture.init(glGenTextures, glDeleteTextures))
+        return false;
+    glBindTexture(GL_TEXTURE_2D, raw_dummy_texture[0]);
+    const uint16_t zero[4]{};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16UI, 1, 1, 0, GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, zero);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     if (!screen_renderer.init(static_assets)) {
         LOG_ERROR("Failed to initialize screen renderer");
         return false;
@@ -329,6 +336,7 @@ bool GLState::init() {
     }
 
     shader_version = fmt::format("v{}-hdr1", shader::CURRENT_VERSION);
+    shader_version += "raw1";
 
 #ifdef __SWITCH__
     // The generated GLSL differs with the mask bit, and native OpenGL shares
@@ -706,13 +714,14 @@ void lookup_and_get_surface_data(GLState &renderer, MemState &mem, SceGxmColorSu
         buffer_size = storage_v.size();
     }
 
-    const SceGxmColorBaseFormat base_format = gxm::get_base_format(format);
-
     GLenum gl_format = format_gl->second.first;
     GLenum gl_type = format_gl->second.second;
-    if (renderer.features.preserve_f16_nan_as_u16 && color::is_write_surface_stored_rawly(base_format)) {
-        gl_format = color::get_raw_store_upload_format_type(base_format);
-        gl_type = color::get_raw_store_upload_data_type(base_format);
+    if (const GLuint raw = renderer.surface_cache.raw_texture_for_surface(surface.data.address())) {
+        tex_handle = raw;
+        gl_format = gl_format == GL_BGRA ? GL_BGRA_INTEGER : GL_RGBA_INTEGER;
+        gl_type = GL_UNSIGNED_SHORT;
+        if (renderer.features.should_use_shader_interlock())
+            glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
     }
 
     if (renderer.features.support_get_texture_sub_image) {
@@ -764,15 +773,15 @@ void get_surface_data(GLState &renderer, GLContext &context, uint32_t *pixels, S
         temp_store = storage_v.data();
     }
 
-    const SceGxmColorBaseFormat base_format = gxm::get_base_format(format);
-    if (renderer.features.preserve_f16_nan_as_u16 && color::is_write_surface_stored_rawly(base_format)) {
-        // we can't get the content of raw textures with glReadPixels
-        GLint last_texture = 0;
-
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
-        glBindTexture(GL_TEXTURE_2D, context.current_color_attachment);
-        glGetTexImage(GL_TEXTURE_2D, 0, color::get_raw_store_upload_format_type(base_format), color::get_raw_store_upload_data_type(base_format), temp_store);
-        glBindTexture(GL_TEXTURE_2D, last_texture);
+    if (renderer.surface_cache.raw_texture_for_surface(surface.data.address())) {
+        if (renderer.features.should_use_shader_interlock())
+            glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
+        GLint last_read_buffer = 0;
+        glGetIntegerv(GL_READ_BUFFER, &last_read_buffer);
+        glReadBuffer(GL_COLOR_ATTACHMENT1);
+        const GLenum raw_format = format_gl->second.first == GL_BGRA ? GL_BGRA_INTEGER : GL_RGBA_INTEGER;
+        glReadPixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), raw_format, GL_UNSIGNED_SHORT, temp_store);
+        glReadBuffer(last_read_buffer);
     } else {
         glReadPixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), format_gl->second.first, format_gl->second.second, temp_store);
     }
@@ -999,6 +1008,7 @@ void GLState::cleanup() {
     texture_cache.cleanup();
 
     surface_cache.cleanup();
+    raw_dummy_texture.cleanup();
 
     screen_renderer.destroy();
 
