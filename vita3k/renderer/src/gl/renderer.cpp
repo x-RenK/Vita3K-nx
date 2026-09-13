@@ -460,6 +460,12 @@ void set_context(GLState &state, GLContext &context, const MemState &mem, const 
     if (color_surface_fin->data.address() == 0) {
         color_surface_fin = nullptr;
     }
+    context.record.is_gamma_corrected = color_surface_fin && color_surface_fin->gamma
+        && color::translate_internal_format(gxm::get_base_format(color_surface_fin->colorFormat)) == GL_RGBA8;
+    if (context.record.is_gamma_corrected)
+        glEnable(GL_FRAMEBUFFER_SRGB);
+    else
+        glDisable(GL_FRAMEBUFFER_SRGB);
 
     SceGxmDepthStencilSurface *ds_surface_fin = &context.record.depth_stencil_surface;
     if ((ds_surface_fin->depth_data.address() == 0) && (ds_surface_fin->stencil_data.address() == 0)) {
@@ -781,6 +787,9 @@ void GLState::render_frame(DisplayState &display, const GxmState &gxm, MemState 
     if (!display_frame.base && !has_overlays)
         return;
 
+    const GLboolean framebuffer_srgb = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+
     SceFVector2 vp_pos = { 0.0f, 0.0f };
     SceFVector2 vp_size = { 0.0f, 0.0f };
 
@@ -881,6 +890,8 @@ void GLState::render_frame(DisplayState &display, const GxmState &gxm, MemState 
             vp_pos.x, vp_pos.y, vp_size.x, vp_size.y,
             fb_w, fb_h, default_fbo);
     }
+    if (framebuffer_srgb)
+        glEnable(GL_FRAMEBUFFER_SRGB);
 }
 
 void GLState::swap_window() {

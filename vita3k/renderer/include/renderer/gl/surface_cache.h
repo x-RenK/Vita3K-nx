@@ -77,6 +77,7 @@ struct GLColorSurfaceCacheInfo : public GLSurfaceCacheInfo {
     Ptr<void> data;
     bool is_ping_pong_dirty;
     GLObjectArray<1> gl_texture;
+    GLObjectArray<1> gl_srgb_texture;
     GLObjectArray<1> gl_ping_pong_texture;
     GLObjectArray<1> gl_expected_read_texture_view;
 
@@ -110,6 +111,9 @@ private:
     const GLRenderTarget *target = nullptr;
 
 private:
+    bool allocate_color_texture(GLColorSurfaceCacheInfo &info, GLenum internal_format, GLenum upload_format, GLenum data_type, bool store_rawly);
+    void replace_color_texture(const State &state, GLuint old_texture, const GLColorSurfaceCacheInfo &info, bool store_rawly);
+
     void do_typeless_copy(const GLuint dest_texture, const GLuint source_texture, const GLenum dest_internal,
         const GLenum dest_upload_format, const GLenum dest_type, const GLenum source_format, const GLenum source_type,
         const int offset_x, const int offset_y, const int width, const int height, const int dest_width, const int dest_height, const std::size_t total_source_size);

@@ -419,6 +419,15 @@ static spv::Id create_builtin_sampler_for_raw(spv::Builder &b, const FeatureStat
     return sampler;
 }
 
+static spv::Id framebuffer_is_srgb(spv::Builder &b, const TranslationState &state, const SpirvShaderParameters &parameters) {
+    if (state.is_vulkan)
+        return parameters.is_srgb_constant;
+    const spv::Id value = utils::create_access_chain(b, spv::StorageClassUniform,
+        state.render_info_id, { b.makeIntConstant(FRAG_UNIFORM_is_srgb) });
+    return b.createBinOp(spv::OpFOrdGreaterThan, b.makeBoolType(),
+        b.createLoad(value, spv::NoPrecision), b.makeFloatConstant(0.5f));
+}
+
 static spv::Id srgb_encode_rgb(spv::Builder &b, utils::SpirvUtilFunctions &utils, spv::Id rgb) {
     const spv::Id f32 = b.makeFloatType(32);
     const spv::Id v3 = b.makeVectorType(f32, 3);
@@ -557,9 +566,9 @@ static void create_fragment_color_load(spv::Builder &b, SpirvShaderParameters &p
             spv::Builder::If cond_builder(load_normal_cond, spv::SelectionControlMaskNone, b);
 
             source = b.createOp(spv::OpImageRead, v4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
-            if (translation_state.is_vulkan) {
+            {
                 const spv::Id old_source = source;
-                spv::Builder::If srgb_cond_builder(parameters.is_srgb_constant, spv::SelectionControlMaskNone, b);
+                spv::Builder::If srgb_cond_builder(framebuffer_is_srgb(b, translation_state, parameters), spv::SelectionControlMaskNone, b);
 
                 const spv::Id v3 = b.makeVectorType(f32, 3);
                 spv::Id rgb = b.createOp(spv::OpVectorShuffle, v3,
@@ -573,8 +582,6 @@ static void create_fragment_color_load(spv::Builder &b, SpirvShaderParameters &p
                 source = old_source;
                 store_source_result();
                 srgb_cond_builder.makeEndIf();
-            } else {
-                store_source_result();
             }
             cond_builder.makeBeginElse();
             color_attachment = color_attachment_raw;
@@ -589,10 +596,10 @@ static void create_fragment_color_load(spv::Builder &b, SpirvShaderParameters &p
             source = b.createOp(spv::OpImageRead, v4, { b.createLoad(color_attachment, spv::NoPrecision), current_coord });
             b.setPrecision(source, precision);
 
-            if (translation_state.is_vulkan) {
+            {
                 const spv::Id old_source = source;
                 // if (is_srgb)
-                spv::Builder::If cond_builder(parameters.is_srgb_constant, spv::SelectionControlMaskNone, b);
+                spv::Builder::If cond_builder(framebuffer_is_srgb(b, translation_state, parameters), spv::SelectionControlMaskNone, b);
 
                 const spv::Id v3 = b.makeVectorType(f32, 3);
                 spv::Id rgb = b.createOp(spv::OpVectorShuffle, v3, { { true, source }, { true, source }, { false, 0 }, { false, 1 }, { false, 2 } });
@@ -1235,7 +1242,7 @@ static SpirvShaderParameters create_parameters(spv::Builder &b, const SceGxmProg
     }
 
     if (program_type == SceGxmProgramType::Fragment) {
-        std::vector<spv::Id> uniform_composition(FRAG_UNIFORM_iterator_written_mask + 1, f32);
+        std::vector<spv::Id> uniform_composition(FRAG_UNIFORM_is_srgb + 1, f32);
         if (uniform_buffer_count > 0) {
             uniform_composition.push_back(buffer_addresses_type);
             uniform_composition.push_back(buffer_bounds_type);
@@ -1268,6 +1275,7 @@ static SpirvShaderParameters create_parameters(spv::Builder &b, const SceGxmProg
         ADD_FRAG_UNIFORM_MEMBER(surface_res_multiplier);
         ADD_FRAG_UNIFORM_MEMBER(raw_cast_mask);
         ADD_FRAG_UNIFORM_MEMBER(iterator_written_mask);
+        ADD_FRAG_UNIFORM_MEMBER(is_srgb);
 
 #undef ADD_FRAG_UNIFORM_MEMBER
         // the resolution multiplier does not require a high precision
@@ -1707,10 +1715,10 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
         spv::Id translated_id = b.createUnaryOp(spv::OpConvertFToS, b.makeVectorType(signed_i32, 4), coord_id);
         translated_id = b.createOp(spv::OpVectorShuffle, b.makeVectorType(signed_i32, 2), { { true, translated_id }, { true, translated_id }, { false, 0 }, { false, 1 } });
 
-        if (translate_state.is_vulkan) {
+        {
             spv::Id old_color = color;
             // if (is_srgb)
-            spv::Builder::If cond_builder(parameters.is_srgb_constant, spv::SelectionControlMaskNone, b);
+            spv::Builder::If cond_builder(framebuffer_is_srgb(b, translate_state, parameters), spv::SelectionControlMaskNone, b);
 
             const spv::Id f32 = b.makeFloatType(32);
             const spv::Id v4 = b.makeVectorType(f32, 4);
@@ -1725,8 +1733,6 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
             cond_builder.makeBeginElse();
             b.createNoResultOp(spv::OpImageWrite, { b.createLoad(translate_state.color_attachment_id, spv::NoPrecision), translated_id, old_color });
             cond_builder.makeEndIf();
-        } else {
-            b.createNoResultOp(spv::OpImageWrite, { b.createLoad(translate_state.color_attachment_id, spv::NoPrecision), translated_id, color });
         }
 
         if (features.preserve_f16_nan_as_u16) {

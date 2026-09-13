@@ -29,7 +29,7 @@ enum VertUniformFieldId : uint32_t {
     VERT_UNIFORM_z_scale
 };
 
-struct RenderFragUniformBlock {
+struct alignas(16) RenderFragUniformBlock {
     float back_disabled = 0.0f;
     float front_disabled = 0.0f;
     float writing_mask = 0.0f;
@@ -44,6 +44,8 @@ struct RenderFragUniformBlock {
     float surface_res_multiplier = 1.0f;
     float raw_cast_mask = 0.0f;
     float iterator_written_mask = 16777215.0f;
+    float is_srgb = 0.0f;
+    std::array<float, 3> padding{};
 };
 
 enum FragUniformFieldId : uint32_t {
@@ -58,7 +60,8 @@ enum FragUniformFieldId : uint32_t {
     FRAG_UNIFORM_inv_frag_height,
     FRAG_UNIFORM_surface_res_multiplier,
     FRAG_UNIFORM_raw_cast_mask,
-    FRAG_UNIFORM_iterator_written_mask
+    FRAG_UNIFORM_iterator_written_mask,
+    FRAG_UNIFORM_is_srgb
 };
 
 template <typename T>

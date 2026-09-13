@@ -28,6 +28,95 @@ static constexpr std::uint64_t CASTED_UNUSED_TEXTURE_PURGE_SECS = 40;
 
 GLSurfaceCache::GLSurfaceCache() = default;
 
+bool GLSurfaceCache::allocate_color_texture(GLColorSurfaceCacheInfo &info, GLenum internal_format, GLenum upload_format, GLenum data_type, bool store_rawly) {
+    if (!info.gl_texture.init(glGenTextures, glDeleteTextures))
+        return false;
+
+    glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
+    if (internal_format == GL_RGBA8)
+        glTexStorage2D(GL_TEXTURE_2D, 1, internal_format, info.width, info.height);
+    else
+        glTexImage2D(GL_TEXTURE_2D, 0, internal_format, info.width, info.height, 0, upload_format, data_type, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, store_rawly ? GL_NEAREST : GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, store_rawly ? GL_NEAREST : GL_LINEAR);
+
+    if (internal_format == GL_RGBA8) {
+        if (!info.gl_srgb_texture.init(glGenTextures, glDeleteTextures))
+            return false;
+        // Rendering encodes sRGB; sampling and readback retain the same unconverted bytes.
+        glTextureView(info.gl_srgb_texture[0], GL_TEXTURE_2D, info.gl_texture[0], GL_SRGB8_ALPHA8, 0, 1, 0, 1);
+    }
+    return true;
+}
+
+void GLSurfaceCache::replace_color_texture(const State &state, GLuint old_texture, const GLColorSurfaceCacheInfo &info, bool store_rawly) {
+    GLint framebuffer, active_texture, texture_units;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active_texture);
+    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &texture_units);
+
+    const GLuint attachment = info.gl_srgb_texture[0] ? info.gl_srgb_texture[0] : info.gl_texture[0];
+    std::vector<uint64_t> keys;
+    for (auto &[key, fb] : framebuffer_array) {
+        if (static_cast<GLuint>(key) != old_texture)
+            continue;
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb[0]);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, store_rawly ? 0 : attachment, 0);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, store_rawly ? attachment : 0, 0);
+        const GLenum buffers[] = { static_cast<GLenum>(store_rawly ? GL_NONE : GL_COLOR_ATTACHMENT0), GL_COLOR_ATTACHMENT1 };
+        glDrawBuffers(store_rawly ? 2 : 1, buffers);
+        keys.push_back(key);
+    }
+    for (const auto key : keys) {
+        auto node = framebuffer_array.extract(key);
+        node.key() = (key & 0xFFFFFFFF00000000ull) | info.gl_texture[0];
+        framebuffer_array.insert(std::move(node));
+    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+
+    glBindTexture(GL_TEXTURE_2D, old_texture);
+    constexpr GLenum parameters[] = { GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER,
+        GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R, GL_TEXTURE_SWIZZLE_RGBA };
+    for (const auto parameter : parameters) {
+        GLint value[4];
+        glBindTexture(GL_TEXTURE_2D, old_texture);
+        glGetTexParameteriv(GL_TEXTURE_2D, parameter, value);
+        glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
+        glTexParameteriv(GL_TEXTURE_2D, parameter, value);
+    }
+    constexpr GLenum float_parameters[] = { GL_TEXTURE_MIN_LOD, GL_TEXTURE_MAX_LOD,
+        GL_TEXTURE_LOD_BIAS, GL_TEXTURE_MAX_ANISOTROPY_EXT };
+    for (const auto parameter : float_parameters) {
+        if (parameter == GL_TEXTURE_MAX_ANISOTROPY_EXT && !GLAD_GL_EXT_texture_filter_anisotropic)
+            continue;
+        GLfloat value;
+        glBindTexture(GL_TEXTURE_2D, old_texture);
+        glGetTexParameterfv(GL_TEXTURE_2D, parameter, &value);
+        glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
+        glTexParameterf(GL_TEXTURE_2D, parameter, value);
+    }
+    if (store_rawly) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    for (GLint unit = 0; unit < texture_units; ++unit) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        GLint bound;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+        if (static_cast<GLuint>(bound) == old_texture)
+            glBindTexture(GL_TEXTURE_2D, info.gl_texture[0]);
+    }
+    glActiveTexture(active_texture);
+
+    if (auto *context = static_cast<GLContext *>(state.context);
+        context && context->current_color_attachment == old_texture) {
+        context->current_color_attachment = info.gl_texture[0];
+        context->current_framebuffer_height = info.original_height;
+        for (const auto index : context->self_sampling_indices)
+            context->self_sampling_uses_attachment[index] = false;
+    }
+}
+
 void GLSurfaceCache::cleanup() {
     color_surface_textures.clear();
 
@@ -158,7 +247,7 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
 
         if (cache_probably_freed) {
             for (auto fbuf_ite = framebuffer_array.begin(); fbuf_ite != framebuffer_array.end();) {
-                if ((fbuf_ite->first & 0xFFFFFFFF) == key) {
+                if (static_cast<GLuint>(fbuf_ite->first) == info.gl_texture[0]) {
                     fbuf_ite = framebuffer_array.erase(fbuf_ite);
                 } else {
                     ++fbuf_ite;
@@ -168,7 +257,6 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
             color_surface_textures.erase(ite);
             invalidated = true;
         } else if (surface_stat_changed) {
-            // Remake locally to avoid making changes to framebuffer array
             uint16_t prev_width = info.width;
             uint16_t prev_height = info.height;
             const bool preserve_contents = surface_extent_changed && !surface_pitch_changed && !surface_format_changed
@@ -245,7 +333,23 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
             }
 
             // This handles some situation where game may stores texture in a larger texture then rebind it
-            remake_and_apply_filters(info.gl_texture[0]);
+            if (info.gl_srgb_texture[0] || surface_internal_format == GL_RGBA8) {
+                GLColorSurfaceCacheInfo replacement;
+                replacement.width = width;
+                replacement.height = height;
+                if (!allocate_color_texture(replacement, surface_internal_format, surface_upload_format, surface_data_type, store_rawly)) {
+                    LOG_ERROR("Failed to resize color surface texture!");
+                    return 0;
+                }
+                if (preserve_contents)
+                    glCopyImageSubData(info.gl_texture[0], GL_TEXTURE_2D, 0, 0, 0, 0,
+                        replacement.gl_texture[0], GL_TEXTURE_2D, 0, 0, 0, 0, prev_width, prev_height, 1);
+                info.gl_texture.swap(replacement.gl_texture);
+                info.gl_srgb_texture.swap(replacement.gl_srgb_texture);
+                replace_color_texture(state, replacement.gl_texture[0], info, store_rawly);
+            } else {
+                remake_and_apply_filters(info.gl_texture[0]);
+            }
 
             if (info.gl_ping_pong_texture[0]) {
                 remake_and_apply_filters(info.gl_ping_pong_texture[0]);
@@ -459,14 +563,6 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
     info_added->flags = 0;
     info_added->is_ping_pong_dirty = true;
 
-    if (!info_added->gl_texture.init(glGenTextures, glDeleteTextures)) {
-        LOG_ERROR("Failed to initialise color surface texture!");
-        color_surface_textures.erase(key);
-
-        return 0;
-    }
-
-    GLint texture_handle_return = info_added->gl_texture[0];
     bool store_rawly = false;
 
     if (state.features.preserve_f16_nan_as_u16 && color::is_write_surface_stored_rawly(base_format)) {
@@ -477,16 +573,11 @@ GLuint GLSurfaceCache::retrieve_color_surface_texture_handle(const State &state,
         store_rawly = true;
     }
 
-    glBindTexture(GL_TEXTURE_2D, texture_handle_return);
-    glTexImage2D(GL_TEXTURE_2D, 0, surface_internal_format, width, height, 0, surface_upload_format, surface_data_type, nullptr);
-
-    if (!store_rawly) {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    } else {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    if (!allocate_color_texture(*info_added, surface_internal_format, surface_upload_format, surface_data_type, store_rawly)) {
+        LOG_ERROR("Failed to initialise color surface texture!");
+        return 0;
     }
+    const GLuint texture_handle_return = info_added->gl_texture[0];
 
     if (color_surface_textures.contains(key)) {
         LOG_WARN_ONCE("Two different surfaces have the same base address, this is not handled, an openGL error will happen.");
@@ -723,6 +814,7 @@ GLuint GLSurfaceCache::retrieve_framebuffer_handle(const State &state, const Mem
     }
 
     GLuint color_handle = 0;
+    GLuint color_attachment = 0;
     GLuint ds_handle = 0;
 
     if (color) {
@@ -732,6 +824,12 @@ GLuint GLSurfaceCache::retrieve_framebuffer_handle(const State &state, const Mem
             SurfaceTextureRetrievePurpose::WRITING, swizzle_set, stored_height);
     } else {
         color_handle = target->attachments[0];
+    }
+    color_attachment = color_handle;
+    if (color) {
+        const auto surface = color_surface_textures.find(color->data.address());
+        if (surface != color_surface_textures.end() && surface->second->gl_srgb_texture[0])
+            color_attachment = surface->second->gl_srgb_texture[0];
     }
 
     if (depth_stencil) {
@@ -765,12 +863,12 @@ GLuint GLSurfaceCache::retrieve_framebuffer_handle(const State &state, const Mem
     glBindFramebuffer(GL_FRAMEBUFFER, fb[0]);
 
     if (color && state.features.preserve_f16_nan_as_u16 && renderer::gl::color::is_write_surface_stored_rawly(gxm::get_base_format(color->colorFormat))) {
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, color_handle, 0);
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, color_attachment, 0);
 
         const GLenum buffers[] = { GL_NONE, GL_COLOR_ATTACHMENT1 };
         glDrawBuffers(2, buffers);
     } else {
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color_handle, 0);
+        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color_attachment, 0);
     }
 
     glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, ds_handle, 0);

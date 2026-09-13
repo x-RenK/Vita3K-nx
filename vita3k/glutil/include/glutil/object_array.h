@@ -22,6 +22,7 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <utility>
 
 namespace renderer {
 typedef void Generator(GLsizei, GLuint *);
@@ -62,6 +63,11 @@ public:
 
     size_t size() const {
         return names.size();
+    }
+
+    void swap(GLObjectArray &other) noexcept {
+        names.swap(other.names);
+        std::swap(deleter, other.deleter);
     }
 
     void cleanup() {
