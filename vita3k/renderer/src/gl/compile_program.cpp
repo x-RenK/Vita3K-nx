@@ -277,6 +277,7 @@ SharedGLObject compile_program(GLState &renderer, GLContext &context, const GxmR
 
     // update the hints
     context.shader_hints.color_format = state.color_surface.colorFormat;
+    context.shader_hints.output_register_format = fragment_program.output_register_format;
     context.shader_hints.attributes = &vertex_program_gxm.attributes;
 
     const SharedGLObject fragment_shader = get_or_compile_shader(fragment_program_gxm.program.get(mem), features, fragment_program.hash, renderer.fragment_shader_cache,
