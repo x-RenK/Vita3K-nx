@@ -432,6 +432,13 @@ bool create(std::unique_ptr<FragmentProgram> &fp, GLState &state, const SceGxmPr
         frag_program_gl->alpha_dst = translate_blend_factor(blend->alphaDst);
     }
 
+    if (program.program_flags & SCE_GXM_PROGRAM_FLAG_OUTPUT_UNDEFINED) {
+        frag_program_gl->color_mask_red = GL_FALSE;
+        frag_program_gl->color_mask_green = GL_FALSE;
+        frag_program_gl->color_mask_blue = GL_FALSE;
+        frag_program_gl->color_mask_alpha = GL_FALSE;
+    }
+
     return true;
 }
 
