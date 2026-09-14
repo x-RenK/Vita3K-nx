@@ -952,7 +952,12 @@ static void check_save_file(const uint32_t index, EmuEnvState &emuenv, const cha
                 const auto thumbnail_path = translate_path(empty_param->iconPath.get(emuenv.mem), device, emuenv.io.device_paths);
                 vfs::read_file(VitaIoDevice::ux0, icon_buf_tmp, emuenv.vita_fs_path, thumbnail_path);
             } else if (iconBuf && (iconBufSize > 0)) {
-                icon_buf_tmp.insert(icon_buf_tmp.end(), iconBuf, iconBuf + iconBufSize);
+                const Address icon_start = empty_param->iconBuf.address();
+                if (is_valid_addr_range(emuenv.mem, icon_start, icon_start + iconBufSize - 1)) {
+                    icon_buf_tmp.insert(icon_buf_tmp.end(), iconBuf, iconBuf + iconBufSize);
+                } else {
+                    LOG_WARN("Save slot {} icon buffer 0x{:X} of 0x{:X} bytes is not mapped, skipping the icon", index, icon_start, iconBufSize);
+                }
             }
         }
     } else {
