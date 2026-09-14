@@ -283,14 +283,9 @@ static constexpr vk::ComponentMapping swizzle_gba1 = { Swizzle::eG, Swizzle::eB,
 
 namespace color {
 
-static vk::ComponentMapping translate_swizzle1(SceGxmColorSwizzle1Mode mode) {
-    switch (mode) {
-    case SCE_GXM_COLOR_SWIZZLE1_R:
-        return swizzle_r001;
-    default:
-        LOG_ERROR("Unknown swizzle mode {}", log_hex(mode));
-        return swizzle_identity;
-    }
+static vk::ComponentMapping translate_swizzle1() {
+    // A one-channel surface always stores its sourced component in red.
+    return swizzle_r001;
 }
 
 static vk::ComponentMapping translate_swizzle2(SceGxmColorSwizzle2Mode mode) {
@@ -377,7 +372,7 @@ vk::ComponentMapping translate_swizzle(SceGxmColorFormat format) {
     case SCE_GXM_COLOR_BASE_FORMAT_S16:
     case SCE_GXM_COLOR_BASE_FORMAT_F16:
     case SCE_GXM_COLOR_BASE_FORMAT_F32:
-        return translate_swizzle1(static_cast<SceGxmColorSwizzle1Mode>(swizzle));
+        return translate_swizzle1();
 
     case SCE_GXM_COLOR_BASE_FORMAT_U8U8:
     case SCE_GXM_COLOR_BASE_FORMAT_S8S8:

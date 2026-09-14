@@ -29,6 +29,9 @@ struct GxmState;
 namespace gxm {
 // Color.
 SceGxmColorBaseFormat get_base_format(SceGxmColorFormat src);
+// Which component of the fragment output a one-channel colour surface stores, or -1 when the
+// surface stores red (and so needs no move) or has more than one channel.
+int one_channel_source_component(SceGxmColorFormat src);
 size_t bits_per_pixel(SceGxmColorBaseFormat base_format);
 size_t get_stride_in_bytes(const SceGxmColorFormat src, const std::size_t stride_in_pixels);
 

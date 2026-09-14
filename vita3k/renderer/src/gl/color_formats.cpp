@@ -85,15 +85,8 @@ static const GLint *translate_swizzle(SceGxmColorSwizzle2Mode mode) {
     return swizzle_gr;
 }
 
-static const GLint *translate_swizzle(SceGxmColorSwizzle1Mode mode) {
-    switch (mode) {
-    case SCE_GXM_COLOR_SWIZZLE1_R:
-        return swizzle_r;
-    case SCE_GXM_COLOR_SWIZZLE1_G:
-        LOG_ERROR("unimplemented swizzle1 mode {}", log_hex(mode));
-        break;
-    }
-
+static const GLint *translate_swizzle(SceGxmColorSwizzle1Mode) {
+    // A one-channel surface always stores its sourced component in red.
     return swizzle_r;
 }
 

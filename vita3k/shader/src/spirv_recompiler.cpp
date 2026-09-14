@@ -122,8 +122,8 @@ struct TranslationState {
     spv::Block *frag_color_load_block = nullptr;
 };
 
-static bool is_u8_alpha_color_surface(const TranslationState &state) {
-    return state.hints->color_format == SCE_GXM_COLOR_FORMAT_U8_A;
+static int one_channel_color_source(const TranslationState &state) {
+    return gxm::one_channel_source_component(state.hints->color_format);
 }
 
 // Framebuffer reads and final color writes can use different register encodings.
@@ -151,15 +151,22 @@ static SceGxmParameterType get_fragment_output_type(const SceGxmProgram &program
     }
 }
 
-static spv::Id alpha_surface_to_shader_color(spv::Builder &b, const spv::Id color) {
-    // Host R8 image reads return (R, 0, 0, 1); GXM A8 exposes (0, 0, 0, R).
-    return b.createOp(spv::OpVectorShuffle, b.getTypeId(color), { { true, color }, { true, color }, { false, 1 }, { false, 2 }, { false, 1 }, { false, 0 } });
+static spv::Id one_channel_surface_to_shader_color(spv::Builder &b, const spv::Id color, const int component) {
+    // A host one-component image read returns (R, 0, 0, 1); the guest sees its own channel carrying
+    // that value and the rest zero, so take red for that channel and green (always zero) elsewhere.
+    std::vector<spv::IdImmediate> operands{ { true, color }, { true, color } };
+    for (unsigned i = 0; i < 4; i++)
+        operands.push_back({ false, (static_cast<int>(i) == component) ? 0u : 1u });
+    return b.createOp(spv::OpVectorShuffle, b.getTypeId(color), operands);
 }
 
-static spv::Id shader_color_to_alpha_surface(spv::Builder &b, const spv::Id color) {
-    // Host single-component render targets store the red output, so move the
-    // guest alpha value there while retaining alpha for blend factors.
-    return b.createOp(spv::OpVectorShuffle, b.getTypeId(color), { { true, color }, { true, color }, { false, 3 }, { false, 1 }, { false, 2 }, { false, 3 } });
+static spv::Id shader_color_to_one_channel_surface(spv::Builder &b, const spv::Id color, const int component) {
+    // Host single-component render targets store the red output, so move the channel the surface
+    // sources from into red while leaving alpha in place for blend factors.
+    std::vector<spv::IdImmediate> operands{ { true, color }, { true, color } };
+    for (unsigned i = 0; i < 4; i++)
+        operands.push_back({ false, (i == 0) ? static_cast<unsigned>(component) : i });
+    return b.createOp(spv::OpVectorShuffle, b.getTypeId(color), operands);
 }
 
 struct VertexProgramOutputProperties {
@@ -495,8 +502,8 @@ static void create_fragment_color_load(spv::Builder &b, SpirvShaderParameters &p
 
     auto store_source_result = [&](const bool direct_store = false) {
         if (source != spv::NoResult) {
-            if (is_u8_alpha_color_surface(translation_state))
-                source = alpha_surface_to_shader_color(b, source);
+            if (const int one_channel = one_channel_color_source(translation_state); one_channel > 0)
+                source = one_channel_surface_to_shader_color(b, source, one_channel);
 
             if (!direct_store && !is_float_data_type(target_to_store.type)) {
                 source = utils::convert_to_int(b, utils, source, target_to_store.type, true);
@@ -1706,8 +1713,9 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
     if (!is_float_data_type(color_val_operand.type))
         color = utils::convert_to_float(b, utils, color, color_val_operand.type, true);
 
-    if (is_u8_alpha_color_surface(translate_state))
-        color = shader_color_to_alpha_surface(b, color);
+    const int one_channel_color = one_channel_color_source(translate_state);
+    if (one_channel_color > 0)
+        color = shader_color_to_one_channel_surface(b, color, one_channel_color);
 
     if (program.is_frag_color_used() && features.should_use_shader_interlock()) {
         spv::Id signed_i32 = b.makeIntType(32);
@@ -1739,8 +1747,8 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
             color_val_operand.type = DataType::UINT16;
             color = utils::load(b, parameters, utils, features, color_val_operand, 0xF, reg_off);
 
-            if (is_u8_alpha_color_surface(translate_state))
-                color = shader_color_to_alpha_surface(b, color);
+            if (one_channel_color > 0)
+                color = shader_color_to_one_channel_surface(b, color, one_channel_color);
 
             b.createNoResultOp(spv::OpImageWrite, { b.createLoad(translate_state.color_attachment_raw_id, spv::NoPrecision), translated_id, color });
         }
@@ -1759,8 +1767,8 @@ static spv::Function *make_frag_finalize_function(spv::Builder &b, const SpirvSh
             color_val_operand.type = DataType::UINT16;
             color = utils::load(b, parameters, utils, features, color_val_operand, 0xF, reg_off);
 
-            if (is_u8_alpha_color_surface(translate_state))
-                color = shader_color_to_alpha_surface(b, color);
+            if (one_channel_color > 0)
+                color = shader_color_to_one_channel_surface(b, color, one_channel_color);
 
             b.createStore(color, out_u16_raw);
         }

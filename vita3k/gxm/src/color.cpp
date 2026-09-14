@@ -24,6 +24,25 @@ SceGxmColorBaseFormat get_base_format(SceGxmColorFormat src) {
     return static_cast<SceGxmColorBaseFormat>(src & SCE_GXM_COLOR_BASE_FORMAT_MASK);
 }
 
+int one_channel_source_component(SceGxmColorFormat src) {
+    // SWIZZLE1_G and SWIZZLE1_A share a value, so the base format says which one a non-red
+    // swizzle names.
+    if ((src & SCE_GXM_COLOR_SWIZZLE_MASK) == SCE_GXM_COLOR_SWIZZLE1_R)
+        return -1;
+
+    switch (get_base_format(src)) {
+    case SCE_GXM_COLOR_BASE_FORMAT_U8:
+    case SCE_GXM_COLOR_BASE_FORMAT_S8:
+        return 3;
+    case SCE_GXM_COLOR_BASE_FORMAT_F16:
+    case SCE_GXM_COLOR_BASE_FORMAT_S16:
+    case SCE_GXM_COLOR_BASE_FORMAT_U16:
+        return 1;
+    default:
+        return -1;
+    }
+}
+
 size_t bits_per_pixel(SceGxmColorBaseFormat base_format) {
     switch (base_format) {
     case SCE_GXM_COLOR_BASE_FORMAT_U8:
