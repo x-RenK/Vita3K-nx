@@ -1929,7 +1929,31 @@ Framebuffer &VKSurfaceCache::retrieve_framebuffer_handle(MemState &mem, SceGxmCo
     return (framebuffer_array[key] = { fb_standard, fb_interlock, color_result.base_image, framebuffer_width, framebuffer_height, color_result.raw_image });
 }
 
-bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address) {
+std::map<Address, ColorSurfaceCacheInfo *>::iterator VKSurfaceCache::find_color_surface_containing(Address address, uint32_t size) {
+    // Small reads keep to the exact-match path; this is here for whole sub-rectangles of a target.
+    constexpr uint32_t min_surface_read_size = KiB(16);
+    if (size < min_surface_read_size)
+        return color_address_lookup.end();
+
+    const auto contains = [&](const std::map<Address, ColorSurfaceCacheInfo *>::iterator &candidate) {
+        return address >= candidate->first
+            && static_cast<uint64_t>(address) + size <= static_cast<uint64_t>(candidate->first) + candidate->second->total_bytes;
+    };
+
+    // The nearest base at or below the address is the likeliest owner, and one older entry can
+    // still contain it when two surfaces overlap.
+    auto it = color_address_lookup.upper_bound(address);
+    for (int step = 0; step < 2; step++) {
+        if (it == color_address_lookup.begin())
+            break;
+        --it;
+        if (contains(it))
+            return it;
+    }
+    return color_address_lookup.end();
+}
+
+bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address, uint32_t source_size) {
     if (!state.features.enable_memory_mapping || state.disable_surface_sync)
         return false;
 
@@ -1942,10 +1966,14 @@ bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, Ca
         return true;
     }
 
-    // for now, only look if the address matches exactly a color surface
     auto it = color_address_lookup.find(source_address);
-    if (it == color_address_lookup.end())
-        return false;
+    if (it == color_address_lookup.end()) {
+        // A downscale reads from the first pixel of its region, so a sub-rectangle of a render
+        // target starts past the surface base and would otherwise read stale guest memory.
+        it = find_color_surface_containing(source_address, source_size);
+        if (it == color_address_lookup.end())
+            return false;
+    }
 
     auto &surface = *it->second;
     VKContext &context = *static_cast<VKContext *>(state.context);

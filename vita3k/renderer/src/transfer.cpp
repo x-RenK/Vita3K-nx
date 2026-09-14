@@ -15,6 +15,8 @@
 // with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+#include <algorithm>
+#include <cstdint>
 #include <vector>
 
 #include <gxm/functions.h>
@@ -235,6 +237,14 @@ COMMAND(handle_transfer_copy) {
     copy_operation();
 }
 
+// Bytes spanned by a transfer region: whole rows up to the last one, then just its pixels.
+static uint64_t transfer_region_bytes(const SceGxmTransferImage &image, uint32_t pixel_bytes) {
+    if (image.width == 0 || image.height == 0 || image.stride <= 0)
+        return 0;
+    return static_cast<uint64_t>(image.stride) * (image.height - 1)
+        + static_cast<uint64_t>(image.width) * pixel_bytes;
+}
+
 COMMAND(handle_transfer_downscale) {
     TRACY_FUNC_COMMANDS(handle_transfer_downscale);
     SceGxmTransferImage *src = helper.pop<SceGxmTransferImage *>();
@@ -319,7 +329,10 @@ COMMAND(handle_transfer_downscale) {
     };
 
     if (renderer.current_backend == Backend::Vulkan && renderer.features.enable_memory_mapping && !renderer.disable_surface_sync) {
-        if (dynamic_cast<vulkan::VKState &>(renderer).surface_cache.check_for_surface(mem, src->address.address(), downscale_operation, dst->address.address()))
+        // src->address has already been moved to the first byte the downscale reads.
+        const uint64_t read_size = transfer_region_bytes(*src, pixel_bytes);
+        if (dynamic_cast<vulkan::VKState &>(renderer).surface_cache.check_for_surface(mem, src->address.address(), downscale_operation, dst->address.address(),
+                static_cast<uint32_t>(std::min<uint64_t>(read_size, UINT32_MAX))))
             // let the vulkan surface cache handle it
             return;
     }

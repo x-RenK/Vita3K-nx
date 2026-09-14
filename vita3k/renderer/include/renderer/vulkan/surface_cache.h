@@ -330,7 +330,10 @@ public:
     // synchronize the surface back to the RAM then only call the callback
     // if this call is used for a copy or similar operation set the changed address to the destination
     // so that subsequent calls to check_for_surface with the target destination also get delayed
-    bool check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address);
+    bool check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address, uint32_t source_size = 0);
+    // The surface whose allocation contains [address, address + size), for a read that starts part
+    // way into a render target rather than at its base.
+    std::map<Address, ColorSurfaceCacheInfo *>::iterator find_color_surface_containing(Address address, uint32_t size);
     bool sync_surface_for_gpu_read(Address address, uint32_t size);
 
     // If non-null, the return value must be sent as a PostSurfaceSyncRequest
