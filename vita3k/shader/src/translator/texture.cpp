@@ -273,9 +273,13 @@ spv::Id shader::usse::USSETranslatorVisitor::do_fetch_texture(const spv::Id tex,
         const spv::Id is_raw = m_b.createBinOp(spv::OpINotEqual, bool_type, bit, m_b.makeUintConstant(0));
         spv::Builder::If raw_branch(is_raw, spv::SelectionControlMaskNone, m_b);
 
+        const spv::Id zero_f4 = m_b.makeCompositeConstant(type_f32_v[4], std::vector<spv::Id>(4, m_b.makeFloatConstant(0.0f)));
+        const spv::Id max_f4 = m_b.makeCompositeConstant(type_f32_v[4], std::vector<spv::Id>(4, m_b.makeFloatConstant(65535.0f)));
         const auto unpack_halves = [&](spv::Id sample) {
             const spv::Id scaled = m_b.createBinOp(spv::OpVectorTimesScalar, type_f32_v[4], sample, m_b.makeFloatConstant(65535.0f));
-            const spv::Id rounded = m_b.createBuiltinCall(type_f32_v[4], std_builtins, GLSLstd450Round, { scaled });
+            spv::Id rounded = m_b.createBuiltinCall(type_f32_v[4], std_builtins, GLSLstd450Round, { scaled });
+            // A sample above the half range wrapped through the 16-bit field on the way out.
+            rounded = m_b.createBuiltinCall(type_f32_v[4], std_builtins, GLSLstd450FClamp, { rounded, zero_f4, max_f4 });
             return m_b.createUnaryOp(spv::OpConvertFToU, uvec4, rounded);
         };
         const auto combine = [&](spv::Id low, spv::Id high) {
