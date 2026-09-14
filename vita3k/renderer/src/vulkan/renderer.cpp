@@ -768,6 +768,9 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
         features.support_clip_distance = enable_depth_clamp
             && static_cast<bool>(physical_device_features.depthClamp)
             && static_cast<bool>(physical_device_features.shaderClipDistance);
+        // A program's own clip planes have nothing to do with the depth clamp, so they need only
+        // the device feature.
+        features.support_gxm_clip_planes = static_cast<bool>(physical_device_features.shaderClipDistance);
 
         // use these features (because they are used by the vita GPU) if they are available
         vk::PhysicalDeviceFeatures enabled_features{
@@ -779,7 +782,7 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
             .occlusionQueryPrecise = physical_device_features.occlusionQueryPrecise,
             .fragmentStoresAndAtomics = physical_device_features.fragmentStoresAndAtomics,
             .shaderStorageImageExtendedFormats = physical_device_features.shaderStorageImageExtendedFormats,
-            .shaderClipDistance = features.support_clip_distance ? VK_TRUE : VK_FALSE,
+            .shaderClipDistance = physical_device_features.shaderClipDistance,
             .shaderInt16 = physical_device_features.shaderInt16,
         };
 
@@ -1511,7 +1514,8 @@ uint32_t VKState::get_features_mask() {
         | (uint32_t(features.support_texture_barrier) << 8)
         | (uint32_t(features.support_unknown_format) << 9)
         | (uint32_t(features.support_clip_distance) << 10)
-        | (uint32_t(features.force_full_precision) << 11);
+        | (uint32_t(features.force_full_precision) << 11)
+        | (uint32_t(features.support_gxm_clip_planes) << 12);
 }
 
 int VKState::get_supported_filters() {
