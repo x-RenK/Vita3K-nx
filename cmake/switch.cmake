@@ -253,6 +253,17 @@ add_custom_target(vita3k_mesa_vulkan_local DEPENDS
 # EGL/Zink rescans the localized archive, while native Vita3K links the object
 # first. Both paths therefore share one Mesa/Nouveau lifetime graph.
 set(OPENGL_SWITCH_VULKAN_LIBRARY "${SWITCH_MESA_LOCAL_ARCHIVE}")
+# CMake's cached library paths otherwise survive a change of SDK, which silently links one Mesa
+# generation against another.
+get_cmake_property(_switch_cache_variables CACHE_VARIABLES)
+foreach(_variable IN LISTS _switch_cache_variables)
+	if(_variable MATCHES "^(OPENGL|_OPENGL)_.+_(LIBRARY|INCLUDE_DIR)$")
+		unset(${_variable} CACHE)
+		unset(${_variable})
+	endif()
+endforeach()
+set(OpenGL_DIR "${SWITCH_VULKAN_SDK}/lib/cmake/OpenGL" CACHE PATH
+	"OpenGL package from the selected Mesa Switch SDK" FORCE)
 find_package(OpenGL CONFIG REQUIRED
 	PATHS "${SWITCH_VULKAN_SDK}/lib/cmake/OpenGL"
 	NO_DEFAULT_PATH)
