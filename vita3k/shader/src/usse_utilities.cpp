@@ -1773,10 +1773,41 @@ spv::Id convert_to_int(spv::Builder &b, const SpirvUtilFunctions &utils, spv::Id
         opr = b.createBuiltinCall(opr_type, utils.std_builtins, GLSLstd450FClamp, { opr, range_begin_vec, range_end_vec });
         opr = b.createBinOp(spv::OpFMul, opr_type, opr, normalizer_vec);
         opr = b.createBuiltinCall(opr_type, utils.std_builtins, GLSLstd450Round, { opr });
-    } else if (type == DataType::UINT8) {
-        const auto lower = create_constant_vector_or_scalar(b, b.makeFloatConstant(0.f), comp_count);
-        const auto upper = create_constant_vector_or_scalar(b, b.makeFloatConstant(255.f), comp_count);
-        opr = b.createBuiltinCall(opr_type, utils.std_builtins, GLSLstd450FClamp, { opr, lower, upper });
+    } else {
+        // An unscaled conversion of a value outside the destination's range wrapped through the
+        // field instead of saturating, so bound the operand first.
+        float lo = 0.0f;
+        float hi = 0.0f;
+        switch (type) {
+        case DataType::UINT8:
+            hi = 255.0f;
+            break;
+        case DataType::INT8:
+            lo = -128.0f;
+            hi = 127.0f;
+            break;
+        case DataType::UINT16:
+            hi = 65535.0f;
+            break;
+        case DataType::INT16:
+            lo = -32768.0f;
+            hi = 32767.0f;
+            break;
+        case DataType::UINT32:
+            hi = 4294967295.0f;
+            break;
+        case DataType::INT32:
+            lo = -2147483648.0f;
+            hi = 2147483647.0f;
+            break;
+        default:
+            break;
+        }
+        if (lo != hi) {
+            const auto lower = create_constant_vector_or_scalar(b, b.makeFloatConstant(lo), comp_count);
+            const auto upper = create_constant_vector_or_scalar(b, b.makeFloatConstant(hi), comp_count);
+            opr = b.createBuiltinCall(opr_type, utils.std_builtins, GLSLstd450FClamp, { opr, lower, upper });
+        }
     }
 
     if (!is_uint) {
