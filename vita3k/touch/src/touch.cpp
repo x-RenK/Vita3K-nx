@@ -354,8 +354,8 @@ int toggle_touchscreen(TouchState &state) {
 
 int touch_get(const SceUID thread_id, EmuEnvState &emuenv, const SceUInt32 &port, SceTouchData *pData, SceUInt32 count, bool is_peek) {
     memset(pData, 0, sizeof(SceTouchData) * count);
-    if (emuenv.drop_inputs || emuenv.ctrl.overlay_input_intercepted.load(std::memory_order_relaxed))
-        return 0;
+
+    const bool input_blocked = emuenv.drop_inputs || emuenv.ctrl.overlay_input_intercepted.load(std::memory_order_relaxed);
 
     const int port_idx = static_cast<int>(port);
 
@@ -377,6 +377,9 @@ int touch_get(const SceUID thread_id, EmuEnvState &emuenv, const SceUInt32 &port
         nb_returned_data = std::min<int>(count, vblank_count - emuenv.touch.last_vcount[port_idx]);
         emuenv.touch.last_vcount[port_idx] = vblank_count;
     }
+
+    if (input_blocked)
+        return nb_returned_data;
 
     int corr_buffer_idx;
     if (is_peek) {
