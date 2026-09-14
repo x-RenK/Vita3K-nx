@@ -165,7 +165,7 @@ set(SWITCH_MESA_DIR "" CACHE PATH
 if(SWITCH_MESA_DIR AND NOT SWITCH_VULKAN_SDK)
 	message(FATAL_ERROR
 		"SWITCH_MESA_DIR points at Mesa's old build-tree layout, which is no longer "
-		"supported. Extract mesa-26.2.0-switch-unified-horizon-sdk.zip and pass "
+		"supported. Extract mesa-26.2.1-switch-unified-horizon-sdk.zip and pass "
 		"-DSWITCH_VULKAN_SDK=<extracted-sdk-root> instead.")
 endif()
 
@@ -175,7 +175,7 @@ set(SWITCH_VULKAN_LINK_DEPENDS "" CACHE INTERNAL "Mesa NVK SDK relink inputs" FO
 
 if(NOT SWITCH_VULKAN_SDK)
 	message(FATAL_ERROR
-		"SWITCH_VULKAN_SDK is required. Extract the Mesa 26.2.0 unified Switch SDK "
+		"SWITCH_VULKAN_SDK is required. Extract the Mesa unified Switch SDK "
 		"and configure with -DSWITCH_VULKAN_SDK=<extracted-sdk-root>.")
 endif()
 
@@ -221,6 +221,10 @@ file(STRINGS "${SWITCH_VULKAN_SDK}/lib/pkgconfig/vulkan.pc"
 string(REGEX REPLACE "^Version: *" "" SWITCH_VULKAN_SDK_VERSION
 	"${_switch_vulkan_version_line}")
 set(SWITCH_VULKAN_SDK_REVISION "unified")
+if(EXISTS "${SWITCH_VULKAN_SDK}/share/mesa-switch/revision")
+	file(STRINGS "${SWITCH_VULKAN_SDK}/share/mesa-switch/revision"
+		SWITCH_VULKAN_SDK_REVISION LIMIT_COUNT 1)
+endif()
 if(NOT SWITCH_VULKAN_SDK_VERSION)
 	message(FATAL_ERROR "Mesa Switch SDK metadata does not contain a Mesa version")
 elseif(SWITCH_VULKAN_SDK_VERSION VERSION_LESS "26.2.0")

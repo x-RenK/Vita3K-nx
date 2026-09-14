@@ -4,8 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-SDK_VERSION=26.2.0
-SDK_ARCHIVE_SHA256=a1026f1b5348b89b87b0904ae13527485a4f0cb5d58088f9230f9c0b5cdb2154
+SDK_VERSION=26.2.1
+SDK_REVISION=efaf009f454e35fc6bcf4357e52455e30bfc3356
+SDK_ARCHIVE_SHA256=88410d78c6c57921375afc7ca87bb938b57129c2f8d60b78ce2700776d5d3084
 SDK_NAME="mesa-${SDK_VERSION}-switch-unified-horizon-sdk"
 BUILD_ROOT="${ROOT}/build-switch-deps"
 ARCHIVE=""
@@ -67,6 +68,8 @@ check_sdk() {
 		"${sdk_root}/lib/libEGL.a" \
 		"${sdk_root}/lib/libGL.a" \
 		"${sdk_root}/lib/cmake/OpenGL/OpenGLConfig.cmake" \
+		"${sdk_root}/share/mesa-switch/revision" \
+		"${sdk_root}/share/mesa-switch/sha256sums" \
 		"${vulkan_pc}"; do
 		if [[ ! -f "${path}" ]]; then
 			echo "Missing Mesa Switch SDK artifact: ${path}" >&2
@@ -79,7 +82,12 @@ check_sdk() {
 		echo "Mesa Switch SDK is not version ${SDK_VERSION}: ${vulkan_pc}" >&2
 		return 1
 	}
-	echo "Ready: unified Mesa Switch SDK ${SDK_VERSION} at ${sdk_root}"
+	grep -Fqx "${SDK_REVISION}" "${sdk_root}/share/mesa-switch/revision" || {
+		echo "Mesa Switch SDK does not match revision ${SDK_REVISION}: ${sdk_root}" >&2
+		return 1
+	}
+	(cd "${sdk_root}" && sha256sum --check --strict --quiet share/mesa-switch/sha256sums) || return 1
+	echo "Ready: unified Mesa Switch SDK ${SDK_VERSION} (${SDK_REVISION}) at ${sdk_root}"
 }
 
 if ((CHECK_ONLY)); then
