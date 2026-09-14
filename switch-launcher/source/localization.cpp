@@ -213,6 +213,8 @@ constexpr Entry ENTRIES[] = {
     {"CPU optimisations", "Optimisations CPU", "CPU-Optimierungen", "Optimizaciones de CPU", "Ottimizzazioni CPU", "Otimizações de CPU", "CPU 优化", "CPU 最佳化"},
     {"Renderer", "Moteur de rendu", "Renderer", "Renderizador", "Renderer", "Renderizador", "渲染器", "渲染器"},
     {"Vulkan (NVK)", "Vulkan (NVK)", "Vulkan (NVK)", "Vulkan (NVK)", "Vulkan (NVK)", "Vulkan (NVK)", "Vulkan (NVK)", "Vulkan (NVK)"},
+    {"GL Thread", "Thread GL", "GL-Thread", "Hilo GL", "Thread GL", "Thread GL", "GL 线程", "GL 執行緒"},
+    {"Runs OpenGL commands on a Mesa worker thread. Applies on next game launch.", "Exécute les commandes OpenGL sur un thread Mesa. S'applique au prochain lancement du jeu.", "Führt OpenGL-Befehle in einem Mesa-Arbeitsthread aus. Gilt ab dem nächsten Spielstart.", "Ejecuta los comandos OpenGL en un hilo de Mesa. Se aplica al iniciar el juego de nuevo.", "Esegue i comandi OpenGL su un thread Mesa. Si applica al prossimo avvio del gioco.", "Executa comandos OpenGL numa thread Mesa. Aplica-se ao iniciar o jogo novamente.", "在 Mesa 工作线程上执行 OpenGL 命令。下次启动游戏时生效。", "在 Mesa 工作執行緒上執行 OpenGL 指令。下次啟動遊戲時生效。"},
     {"OpenGL (NVC0)", "OpenGL (NVC0)", "OpenGL (NVC0)", "OpenGL (NVC0)", "OpenGL (NVC0)", "OpenGL (NVC0)", "OpenGL (NVC0)", "OpenGL (NVC0)"},
     {"Zink (OpenGL on NVK)", "Zink (OpenGL sur NVK)", "Zink (OpenGL über NVK)", "Zink (OpenGL sobre NVK)", "Zink (OpenGL su NVK)", "Zink (OpenGL sobre NVK)", "Zink（NVK 上的 OpenGL）", "Zink（NVK 上的 OpenGL）"},
     {"Vulkan only", "Vulkan uniquement", "Nur Vulkan", "Solo Vulkan", "Solo Vulkan", "Apenas Vulkan", "仅 Vulkan", "僅 Vulkan"},

@@ -155,6 +155,7 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(bool, "archive-log", false, archive_log)                                                       \
     code(bool, "file-logging", false, file_logging)                                                      \
     code(std::string, "backend-renderer", "Vulkan", backend_renderer)                                   \
+    code(bool, "switch-gl-thread", true, switch_gl_thread)                                               \
     code(std::string, "custom-driver-name", "", custom_driver_name)                                     \
     code(bool, "turbo-mode", false, turbo_mode)                                                         \
     code(int, "gpu-idx", 0, gpu_idx)                                                                    \

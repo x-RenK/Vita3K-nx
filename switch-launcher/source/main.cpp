@@ -398,6 +398,7 @@ static const Opt S_emulation[] = {
 // GPU / Graphics (-> config.yml). All three renderers live in one unified NRO.
 static const Opt S_graphics[] = {
   O_CHOICE("Renderer",                "backend-renderer",            C_backend, "Vulkan"),
+  O_CHOICE("GL Thread",               "switch-gl-thread",            C_bool,    "true"),
   O_CHOICE("Resolution scale",        "resolution-multiplier",      C_resmult, "1.0"),
   O_CHOICE("Memory mapping",          "memory-mapping",             C_memmap,  "external-host"),
   O_CHOICE("High accuracy",           "high-accuracy",              C_bool,    "false"),
@@ -2473,6 +2474,7 @@ static const SettingHelpEntry SETTING_HELP[] = {
   {"switch-lsfg-flow-scale","Frame generation quality","Sets the optical-flow resolution. Quarter is recommended on Switch; Half can improve motion detail but costs more GPU time and memory."},
   {"switch-lsfg-performance","Frame generation performance","Uses LSFG's lighter performance-oriented path. Disable it only when image quality matters more than GPU headroom."},
   {"backend-renderer","Display backend","Chooses the Switch renderer. Vulkan (NVK) is recommended and supports LSFG. OpenGL uses native NVC0, while Zink runs OpenGL on NVK as an additional compatibility path."},
+  {"switch-gl-thread","Graphics","Runs OpenGL commands on a Mesa worker thread. Applies on next game launch."},
   {"resolution-multiplier","Graphics","Scales the Vita render resolution. Higher values sharpen the image but increase GPU and memory cost."},
   {"memory-mapping","Compatibility","Selects how Vulkan sees Vita GPU memory. External host maps the Vita's own memory straight to the GPU (fastest, default). Double buffer keeps a checked copy instead. Disabled turns mapping off entirely, which some games need."},
   {"high-accuracy","Compatibility","Uses more accurate GPU behavior for games that render incorrectly, at a possible performance cost."},
@@ -2718,9 +2720,8 @@ static void drawSettingsRowText(const char *label,const char *value,
   }
 }
 
-static void renderSettings(int scr,int sel,int top,const char *ctx){
+static void renderSettings(const Screen &S,int sel,int top,const char *ctx){
   clearUiBackground();
-  const Screen &S=g_screens[scr];
   drawLocalizedHeader(S.title, ctx);
   int colX,colW,labelX,valX; listCol(&colX,&colW,&labelX,&valX);
   int vis=listVis();
@@ -2944,8 +2945,30 @@ static void optChoosePopup(const Opt &o) {
 
 static int s_setSel[SCR_COUNT]={0}, s_setTop[SCR_COUNT]={0};   // per-screen position, remembered across re-entry
 static void runSettings(int scr, SDL_GameController *pad, const char *ctx) {
-  const Screen &S=g_screens[scr];
+  Screen S=g_screens[scr];
+  std::vector<Opt> options;
+  std::string shownBackend;
   int sel=s_setSel[scr], top=s_setTop[scr];
+  auto refreshOptions=[&]{
+    const char *backend=iniGet("backend-renderer","Vulkan");
+    if(!options.empty() && shownBackend==backend) return;
+    const char *selectedKey=!options.empty() && sel>=0 && sel<S.n?S.opts[sel].key:nullptr;
+    shownBackend=backend;
+    options.clear();
+    const Screen &source=g_screens[scr];
+    for(int i=0;i<source.n;i++){
+      const Opt &o=source.opts[i];
+      if(o.key && !strcmp(o.key,"switch-gl-thread") &&
+         shownBackend!="OpenGL" && shownBackend!="Zink") continue;
+      options.push_back(o);
+    }
+    S.opts=options.data(); S.n=(int)options.size();
+    if(selectedKey) for(int i=0;i<S.n;i++)
+      if(S.opts[i].key && !strcmp(S.opts[i].key,selectedKey)){sel=i;break;}
+    sel=std::clamp(sel,0,S.n-1);
+    top=std::clamp(top,0,std::max(0,S.n-listVis()));
+  };
+  refreshOptions();
   if(sel<0||sel>=S.n) sel=0;
   if(top<0||top>=S.n) top=0;
   while(sel<S.n-1 && !optEnabled(S.opts[sel])) sel++;   // start on the first enabled row
@@ -2956,6 +2979,7 @@ static void runSettings(int scr, SDL_GameController *pad, const char *ctx) {
     SDL_Event e;
     navRepeat();
     while(pollUiEvent(e)){
+      refreshOptions();
       pumpStick(e);
       { int tx=0,ty=0; TouchKind tk=touchFeed(e,&tx,&ty);              // touchscreen
         int visible=listVis();
@@ -3006,7 +3030,8 @@ static void runSettings(int scr, SDL_GameController *pad, const char *ctx) {
       int vis=listVis(); if(sel<top) top=sel; if(sel>=top+vis) top=sel-vis+1; if(top<0)top=0;
       s_setSel[scr]=sel; s_setTop[scr]=top;   // remember position for next entry
     }
-    renderSettings(scr,sel,top,ctx);
+    refreshOptions();
+    renderSettings(S,sel,top,ctx);
     waitForNextFrame();
   }
 }

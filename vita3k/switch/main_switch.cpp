@@ -94,7 +94,7 @@ public:
         destroy_render_context();
     }
 
-    bool initialize_for_backend(renderer::Backend backend, const std::string &configured_backend, bool want_gl_spirv) {
+    bool initialize_for_backend(renderer::Backend backend, const std::string &configured_backend, bool want_gl_spirv, bool gl_thread) {
         if (m_display != EGL_NO_DISPLAY || m_surface != EGL_NO_SURFACE || m_context != EGL_NO_CONTEXT)
             destroy_render_context();
 
@@ -109,9 +109,7 @@ public:
         }
 
         const bool use_zink = configured_backend == "Zink";
-        // Vita3K already owns a dedicated render thread. Mesa's extra GL thread
-        // adds latency and makes context shutdown needlessly complicated.
-        setenv("MESA_SWITCH_GLTHREAD", "0", 1);
+        setenv("MESA_SWITCH_GLTHREAD", gl_thread ? "1" : "0", 1);
         // Enable the extension before creating the OpenGL context.
         setenv("NOUVEAU_SWITCH_GL_SPIRV", want_gl_spirv ? "1" : "0", 1);
         setenv("MESA_SWITCH_GL_DRIVER", use_zink ? "zink" : "nvc0", 1);
@@ -205,7 +203,7 @@ public:
             return false;
         }
 
-        LOG_INFO("Initialized {} through EGL {}.{}", use_zink ? "Zink" : "native OpenGL", major, minor);
+        LOG_INFO("Initialized {} through EGL {}.{} (GL thread {})", use_zink ? "Zink" : "native OpenGL", major, minor, gl_thread ? "on" : "off");
         return true;
     }
 
@@ -1538,7 +1536,7 @@ SwitchRunResult run_game(const std::string &title_id, NWindow *nwindow) {
 
         if (!frame_host.initialize_for_backend(
                 emuenv->backend_renderer, emuenv->cfg.current_config.backend_renderer,
-                emuenv->cfg.current_config.spirv_shader)) {
+                emuenv->cfg.current_config.spirv_shader, emuenv->cfg.switch_gl_thread)) {
             LOG_ERROR("Failed to initialize the selected Switch graphics backend '{}'.",
                 emuenv->cfg.current_config.backend_renderer);
             cleanup_launch(app::AppSessionStopReason::LaunchFailure);
