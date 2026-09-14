@@ -316,7 +316,11 @@ static const Choice C_gyroSource[] = { {"Right Joy-Con","right"}, {"Left Joy-Con
 static const Choice C_boolint[]  = { {"Off","0"}, {"On","1"} };   // int-typed on/off (e.g. psn-signed-in)
 static const Choice C_backend[]  = { {"Vulkan (NVK)","Vulkan"}, {"OpenGL (NVC0)","OpenGL"},
                                      {"Zink (OpenGL on NVK)","Zink"} };
-static const Choice C_resmult[]  = { {"0.5x","0.5"}, {"1.0x","1.0"}, {"1.5x","1.5"}, {"2.0x","2.0"}, {"3.0x","3.0"} };
+static const Choice C_resmult[]  = {
+  {"0.5x","0.5"},   {"0.75x","0.75"}, {"1.0x","1.0"},   {"1.25x","1.25"},
+  {"1.5x","1.5"},   {"1.75x","1.75"}, {"2.0x","2.0"},   {"2.25x","2.25"},
+  {"2.5x","2.5"},   {"2.75x","2.75"}, {"3.0x","3.0"},
+};
 static const Choice C_modules[]  = { {"Automatic","0"}, {"Auto + manual","1"}, {"Manual","2"} }; // matches ModulesMode enum
 static const Choice C_filter[]   = { {"Nearest","Nearest"}, {"Bilinear","Bilinear"}, {"Bicubic","Bicubic"}, {"FXAA","FXAA"}, {"FSR","FSR"} }; // Vulkan superset; GL exposes Bilinear/FXAA below
 static const Choice C_fsrSharpness[] = {
