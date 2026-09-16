@@ -2436,9 +2436,16 @@ static void optValue(const Opt &o, char *out, int n) {
 // its own verdict: green when the console is set up as intended, red when it is
 // not. Returns false for rows that follow the normal selection colours.
 static bool optValueVerdictColor(const Opt &o, SDL_Color *out) {
-  if(o.type!=OT_STATUS || !o.key || strcmp(o.key,"cpu-cores")) return false;
-  *out = allowedCpuCores()>=4 ? (SDL_Color){120,215,130,255} : (SDL_Color){235,125,125,255};
-  return true;
+  if(o.type!=OT_STATUS || !o.key) return false;
+  if(!strcmp(o.key,"cpu-cores")) {
+    *out = allowedCpuCores()>=4 ? (SDL_Color){120,215,130,255} : (SDL_Color){235,125,125,255};
+    return true;
+  }
+  if(!strcmp(o.key,"lsfg-dll")) {
+    *out = lsfgDllInstalled() ? (SDL_Color){120,220,120,255} : (SDL_Color){235,125,115,255};
+    return true;
+  }
+  return false;
 }
 static void optAdjust(const Opt &o, int dir) {
   if (!optEnabled(o)) return;
