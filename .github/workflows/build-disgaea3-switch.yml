@@ -5,6 +5,10 @@ on:
     branches: [disgaea3-performance]
   workflow_dispatch:
 
+concurrency:
+  group: disgaea3-switch-build
+  cancel-in-progress: true
+
 permissions:
   contents: read
   actions: read
