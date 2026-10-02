@@ -39,8 +39,8 @@ jobs:
             switch-zlib \
             switch-libzstd \
             switch-libexpat \
-            switch-libdrm_nouveau \
-            switch-libelf
+            switch-libdrm_nouveau
+          test -f "$DEVKITPRO/portlibs/switch/lib/libelf.a"
 
       - name: Checkout Vita3K-nx
         uses: actions/checkout@v4
