@@ -40,7 +40,6 @@ jobs:
             switch-libzstd \
             switch-libexpat \
             switch-libdrm_nouveau
-          test -f "$DEVKITPRO/portlibs/switch/lib/libelf.a"
 
       - name: Checkout Vita3K-nx
         uses: actions/checkout@v4
@@ -54,8 +53,10 @@ jobs:
       - name: Apply Switch submodule patches
         run: bash scripts/apply-switch-submodule-patches.sh
 
-      - name: Apply Disgaea 3 performance patch
+      - name: Apply Switch compatibility and Disgaea 3 patches
         run: |
+          git apply --check patches/switch-mesa-no-libelf.patch
+          git apply patches/switch-mesa-no-libelf.patch
           git apply --check patches/disgaea3-uniform-dedup.patch
           git apply patches/disgaea3-uniform-dedup.patch
           git diff --check
