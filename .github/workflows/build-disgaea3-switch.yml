@@ -1,0 +1,115 @@
+name: Build Disgaea 3 Vita3K-nx
+
+on:
+  push:
+    branches: [disgaea3-performance]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  DEVKITPRO: /opt/devkitpro
+  DEVKITA64: /opt/devkitpro/devkitA64
+  VITA3K_BUILD_JOBS: 2
+
+jobs:
+  build-switch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: devkitpro/devkita64:latest
+      options: --user root
+
+    steps:
+      - name: Install host tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git jq unzip zip \
+            cmake ninja-build pkg-config perl make patch
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install Switch portlibs
+        run: |
+          dkp-pacman -S --noconfirm --needed \
+            switch-pkg-config \
+            switch-zlib \
+            switch-libzstd \
+            switch-libexpat \
+            switch-libdrm_nouveau \
+            switch-libelf
+
+      - name: Checkout Vita3K-nx
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Trust checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Apply Switch submodule patches
+        run: bash scripts/apply-switch-submodule-patches.sh
+
+      - name: Apply Disgaea 3 performance patch
+        run: |
+          git apply --check patches/disgaea3-uniform-dedup.patch
+          git apply patches/disgaea3-uniform-dedup.patch
+          git diff --check
+
+      - name: Download latest Mesa Switch SDK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api='https://api.github.com/repos/NaGaa95/mesa-switch'
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28')
+          run_id="$(curl -fsSL "${auth[@]}" \
+            "$api/actions/workflows/build.yml/runs?branch=main&status=success&per_page=1" \
+            | jq -r '.workflow_runs[0].id // empty')"
+          test -n "$run_id"
+          artifact_id="$(curl -fsSL "${auth[@]}" "$api/actions/runs/$run_id/artifacts?per_page=100" \
+            | jq -r '.artifacts[] | select(.expired == false) | select(.name | test("mesa-.*-switch-unified-horizon-sdk")) | .id' \
+            | head -n1)"
+          test -n "$artifact_id"
+          curl -fsSL "${auth[@]}" "$api/actions/artifacts/$artifact_id/zip" -o mesa-sdk.zip
+          rm -rf build-switch-deps/mesa-artifact
+          mkdir -p build-switch-deps/mesa-artifact
+          unzip -q mesa-sdk.zip -d build-switch-deps/mesa-artifact
+          sdk="$GITHUB_WORKSPACE/build-switch-deps/mesa-artifact/opt/devkitpro/portlibs/switch"
+          test -f "$sdk/lib/libvulkan.a"
+          test -f "$sdk/include/vulkan/vulkan.h"
+          echo "VITA3K_SWITCH_VULKAN_SDK=$sdk" >> "$GITHUB_ENV"
+          grep '^Version:' "$sdk/lib/pkgconfig/vulkan.pc" || true
+
+      - name: Build Switch OpenSSL
+        run: bash scripts/prepare-switch-openssl.sh
+
+      - name: Configure Vita3K-nx for Switch
+        run: |
+          cmake -S . -B build-switch -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSWITCH_OPENSSL_DIR="$GITHUB_WORKSPACE/build-switch-deps/openssl-4.0.1" \
+            -DSWITCH_VULKAN_SDK="$VITA3K_SWITCH_VULKAN_SDK"
+
+      - name: Build Vita3K.nro
+        run: cmake --build build-switch --parallel "$VITA3K_BUILD_JOBS"
+
+      - name: Verify output
+        run: |
+          test -s build-switch/Vita3K.nro
+          sha256sum build-switch/Vita3K.nro | tee build-switch/Vita3K.nro.sha256
+          ls -lh build-switch/Vita3K.nro
+
+      - name: Upload Vita3K.nro
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vita3K-1.3.1-Disgaea3-performance
+          path: |
+            build-switch/Vita3K.nro
+            build-switch/Vita3K.nro.sha256
+          if-no-files-found: error
