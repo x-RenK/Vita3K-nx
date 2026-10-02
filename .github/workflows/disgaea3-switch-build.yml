@@ -1,0 +1,181 @@
+name: Disgaea 3 Vita3K-nx Switch Build
+
+on:
+  push:
+    branches:
+      - disgaea3-1.3.1-perf
+  workflow_dispatch:
+
+jobs:
+  build-switch:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    env:
+      DEVKITPRO: /opt/devkitpro
+      DEVKITA64: /opt/devkitpro/devkitA64
+      VITA3K_BUILD_JOBS: 4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Switch portlibs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          dkp-pacman -Syu --noconfirm
+          dkp-pacman -S --noconfirm \
+            switch-zlib switch-zstd switch-expat switch-libelf switch-libdrm_nouveau \
+            switch-mesa || true
+          echo 'Available Mesa/NVK packages:'
+          dkp-pacman -Ss 'switch-(mesa|nvk|vulkan)' || true
+          echo 'Portlibs graphics files:'
+          find "$DEVKITPRO/portlibs/switch" -maxdepth 3 -type f \
+            \( -name 'libvulkan.a' -o -name 'libEGL.a' -o -name 'libGL.a' -o -name 'vulkan.pc' \) -print || true
+
+      - name: Restore 1.3.0 uniform-buffer dedup optimization
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          types = Path('vita3k/renderer/include/renderer/types.h')
+          s = types.read_text()
+          old = '''    uint64_t dedup_texture[SCE_GXM_MAX_TEXTURE_UNITS * 2][2] = {};
+              uint64_t dedup_texture_set = 0;
+              uint64_t dedup_scalar[2][8] = {};
+          '''
+          new = '''    uint64_t dedup_texture[SCE_GXM_MAX_TEXTURE_UNITS * 2][2] = {};
+              uint64_t dedup_texture_set = 0;
+              uint32_t dedup_uniform_addr[2][16] = {};
+              uint16_t dedup_uniform_size[2][16] = {};
+              uint32_t dedup_uniform_set[2] = {};
+              uint64_t dedup_scalar[2][8] = {};
+          '''
+          if old not in s:
+              raise SystemExit('types.h insertion point not found')
+          s = s.replace(old, new, 1)
+          old = '''        dedup_texture_set = 0;
+                  dedup_scalar_set[0] = 0;
+          '''
+          new = '''        dedup_texture_set = 0;
+                  dedup_uniform_set[0] = 0;
+                  dedup_uniform_set[1] = 0;
+                  dedup_scalar_set[0] = 0;
+          '''
+          if old not in s:
+              raise SystemExit('types.h reset insertion point not found')
+          s = s.replace(old, new, 1)
+          types.write_text(s)
+
+          renderer = Path('vita3k/renderer/src/renderer.cpp')
+          s = renderer.read_text()
+          old = '''    // Each draw needs fresh staging data or synchronization of mapped memory,
+              // even when the guest buffer address is unchanged.
+              renderer::add_state_set_command(ctx, renderer::GXMState::UniformBuffer, buffer, is_vertex_uniform, block_number, bytes_to_copy_and_pad);
+          '''
+          new = '''#ifdef __SWITCH__
+              // Restore the 1.3.0 Switch optimization: avoid re-emitting an
+              // unchanged uniform buffer binding during consecutive draws.
+              if (ctx && ctx->emission_dedup_valid && block_number >= 0 && block_number < 16) {
+                  const int side = is_vertex_uniform ? 0 : 1;
+                  uint32_t &last_addr = ctx->dedup_uniform_addr[side][block_number];
+                  uint16_t &last_size = ctx->dedup_uniform_size[side][block_number];
+                  const uint32_t bit = 1u << block_number;
+                  if ((ctx->dedup_uniform_set[side] & bit) && last_addr == buffer.address() && last_size == block_size)
+                      return;
+                  ctx->dedup_uniform_set[side] |= bit;
+                  last_addr = buffer.address();
+                  last_size = block_size;
+              }
+          #endif
+
+              renderer::add_state_set_command(ctx, renderer::GXMState::UniformBuffer, buffer, is_vertex_uniform, block_number, bytes_to_copy_and_pad);
+          '''
+          if old not in s:
+              raise SystemExit('renderer.cpp uniform-buffer block not found')
+          s = s.replace(old, new, 1)
+          renderer.write_text(s)
+          PY
+
+          grep -n "dedup_uniform" vita3k/renderer/include/renderer/types.h vita3k/renderer/src/renderer.cpp
+
+      - name: Verify Disgaea 3 save fix is still present
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -n "icon buffer.*not mapped" vita3k/modules/SceCommonDialog/SceCommonDialog.cpp
+
+      - name: Prepare Switch OpenSSL
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash scripts/prepare-switch-openssl.sh
+
+      - name: Select graphics SDK
+        id: gfx
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$DEVKITPRO/portlibs/switch"
+          REQUIRED=(
+            include/vulkan/vulkan.h
+            include/EGL/egl.h
+            include/GL/gl.h
+            lib/libvulkan.a
+            lib/libEGL.a
+            lib/libGL.a
+            lib/cmake/OpenGL/OpenGLConfig.cmake
+            lib/pkgconfig/vulkan.pc
+          )
+          missing=0
+          for f in "${REQUIRED[@]}"; do
+            if [[ ! -f "$SDK/$f" ]]; then
+              echo "MISSING: $SDK/$f"
+              missing=1
+            fi
+          done
+          if [[ $missing -ne 0 ]]; then
+            echo 'The devkitPro image does not contain the unified Mesa/NVK SDK required by Vita3K-nx.'
+            exit 2
+          fi
+          echo "sdk=$SDK" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Vita3K-nx for Switch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash scripts/apply-switch-submodule-patches.sh
+          cmake -S . -B build-switch -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
+            -DSWITCH_OPENSSL_DIR="$GITHUB_WORKSPACE/build-switch-deps/openssl-4.0.1" \
+            -DSWITCH_VULKAN_SDK="${{ steps.gfx.outputs.sdk }}"
+
+      - name: Build Vita3K.nro
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build-switch -j4
+          find build-switch -type f -name 'Vita3K*.nro' -o -name '*.nro'
+
+      - name: Stage NRO
+        shell: bash
+        run: |
+          set -euxo pipefail
+          NRO="$(find build-switch -type f -name '*.nro' | head -n1)"
+          test -n "$NRO"
+          cp "$NRO" Vita3K-Disgaea3-1.3.1-perf.nro
+          sha256sum Vita3K-Disgaea3-1.3.1-perf.nro
+
+      - name: Upload NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vita3K-Disgaea3-1.3.1-perf
+          path: Vita3K-Disgaea3-1.3.1-perf.nro
+          if-no-files-found: error
