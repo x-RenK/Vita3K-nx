@@ -1,8 +1,8 @@
 diff --git a/cmake/switch.cmake b/cmake/switch.cmake
 --- a/cmake/switch.cmake
 +++ b/cmake/switch.cmake
-@@ -171,7 +171,6 @@ set(SWITCH_VULKAN_SDK_REVISION "unified")
- endif()
+@@ -199,7 +199,6 @@ foreach(_file IN LISTS _switch_vulkan_required_files)
+ endforeach()
  
  set(_switch_vulkan_required_portlibs
 -	libelf.a
