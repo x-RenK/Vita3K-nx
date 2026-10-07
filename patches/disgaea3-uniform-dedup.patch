@@ -1,0 +1,50 @@
+diff --git a/vita3k/renderer/include/renderer/types.h b/vita3k/renderer/include/renderer/types.h
+--- a/vita3k/renderer/include/renderer/types.h
++++ b/vita3k/renderer/include/renderer/types.h
+@@ -140,6 +140,9 @@ struct Context {
+     uint32_t dedup_program_addr[2] = {};
+     uint64_t dedup_texture[SCE_GXM_MAX_TEXTURE_UNITS * 2][2] = {};
+     uint64_t dedup_texture_set = 0;
++    uint32_t dedup_uniform_addr[2][16] = {};
++    uint16_t dedup_uniform_size[2][16] = {};
++    uint32_t dedup_uniform_set[2] = {};
+     uint64_t dedup_scalar[2][8] = {};
+     uint16_t dedup_scalar_set[2] = {};
+ 
+@@ -148,6 +151,8 @@ struct Context {
+         emission_dedup_valid = false;
+         memset(dedup_program_addr, 0, sizeof(dedup_program_addr));
+         dedup_texture_set = 0;
++        dedup_uniform_set[0] = 0;
++        dedup_uniform_set[1] = 0;
+         dedup_scalar_set[0] = 0;
+         dedup_scalar_set[1] = 0;
+     }
+diff --git a/vita3k/renderer/src/renderer.cpp b/vita3k/renderer/src/renderer.cpp
+--- a/vita3k/renderer/src/renderer.cpp
++++ b/vita3k/renderer/src/renderer.cpp
+@@ -387,8 +387,24 @@ void set_uniform_buffer(State &state, Context *ctx, const bool is_vertex_uniform,
+     // Calculate the number of bytes
+     std::uint32_t bytes_to_copy_and_pad = ((block_size + 15) / 16) * 16;
+ 
+-    // Each draw needs fresh staging data or synchronization of mapped memory,
+-    // even when the guest buffer address is unchanged.
++#ifdef __SWITCH__
++    // Performance experiment for Disgaea 3: restore the Switch-side uniform
++    // emission deduplication used by Vita3K-nx 1.3.0. This avoids re-emitting
++    // an identical uniform binding on consecutive draws.
++    if (ctx && ctx->emission_dedup_valid && block_number >= 0 && block_number < 16) {
++        const int side = is_vertex_uniform ? 0 : 1;
++        uint32_t &last_addr = ctx->dedup_uniform_addr[side][block_number];
++        uint16_t &last_size = ctx->dedup_uniform_size[side][block_number];
++        const uint32_t bit = 1u << block_number;
++        if ((ctx->dedup_uniform_set[side] & bit) && last_addr == buffer.address() && last_size == block_size)
++            return;
++        ctx->dedup_uniform_set[side] |= bit;
++        last_addr = buffer.address();
++        last_size = block_size;
++    }
++#endif
++
+     renderer::add_state_set_command(ctx, renderer::GXMState::UniformBuffer, buffer, is_vertex_uniform, block_number, bytes_to_copy_and_pad);
+ }
