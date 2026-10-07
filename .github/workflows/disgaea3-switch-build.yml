@@ -40,7 +40,6 @@ jobs:
             "$DEVKITPRO/portlibs/switch/lib/libz.a" \
             "$DEVKITPRO/portlibs/switch/lib/libzstd.a" \
             "$DEVKITPRO/portlibs/switch/lib/libexpat.a" \
-            "$DEVKITPRO/portlibs/switch/lib/libelf.a" \
             "$DEVKITPRO/portlibs/switch/lib/libdrm_nouveau.a"; do
             if [[ -f "$f" ]]; then
               echo "FOUND: $f"
@@ -171,6 +170,7 @@ jobs:
             test -f "$f"
           done
 
+          sed -i '/^[[:space:]]*libelf\\.a$/d' cmake/switch.cmake
           echo "sdk=$SDK" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Switch OpenSSL
