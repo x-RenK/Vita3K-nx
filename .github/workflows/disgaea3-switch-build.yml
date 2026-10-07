@@ -29,15 +29,25 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install host and Switch dependencies
+      - name: Install host tools and verify Switch portlibs
         shell: bash
         run: |
           set -euxo pipefail
           apt-get update
           apt-get install -y gh unzip ninja-build cmake python3 perl make curl pkg-config
-          dkp-pacman -Syu --noconfirm
-          dkp-pacman -S --noconfirm \
-            switch-zlib switch-zstd switch-expat switch-libelf switch-libdrm_nouveau
+          echo "Using preinstalled devkitPro libraries from the devkita64 image"
+          for f in \
+            "$DEVKITPRO/portlibs/switch/lib/libz.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libzstd.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libexpat.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libelf.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libdrm_nouveau.a"; do
+            if [[ -f "$f" ]]; then
+              echo "FOUND: $f"
+            else
+              echo "MISSING: $f"
+            fi
+          done
 
       - name: Apply Disgaea 3 performance patch
         shell: bash
