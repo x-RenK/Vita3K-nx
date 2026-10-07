@@ -49,12 +49,71 @@ jobs:
             fi
           done
 
-      - name: Apply Disgaea 3 performance patch
+      - name: Apply Disgaea 3 performance optimization
         shell: bash
         run: |
           set -euxo pipefail
-          git apply --check patches/disgaea3-uniform-dedup.patch
-          git apply patches/disgaea3-uniform-dedup.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          types = Path("vita3k/renderer/include/renderer/types.h")
+          s = types.read_text()
+          old = """    uint64_t dedup_texture[SCE_GXM_MAX_TEXTURE_UNITS * 2][2] = {};
+              uint64_t dedup_texture_set = 0;
+              uint64_t dedup_scalar[2][8] = {};
+          """
+          new = """    uint64_t dedup_texture[SCE_GXM_MAX_TEXTURE_UNITS * 2][2] = {};
+              uint64_t dedup_texture_set = 0;
+              uint32_t dedup_uniform_addr[2][16] = {};
+              uint16_t dedup_uniform_size[2][16] = {};
+              uint32_t dedup_uniform_set[2] = {};
+              uint64_t dedup_scalar[2][8] = {};
+          """
+          if old not in s:
+              raise SystemExit("types.h insertion point not found")
+          s = s.replace(old, new, 1)
+
+          old = """        dedup_texture_set = 0;
+                  dedup_scalar_set[0] = 0;
+          """
+          new = """        dedup_texture_set = 0;
+                  dedup_uniform_set[0] = 0;
+                  dedup_uniform_set[1] = 0;
+                  dedup_scalar_set[0] = 0;
+          """
+          if old not in s:
+              raise SystemExit("types.h reset point not found")
+          s = s.replace(old, new, 1)
+          types.write_text(s)
+
+          renderer = Path("vita3k/renderer/src/renderer.cpp")
+          s = renderer.read_text()
+          marker = """    // Each draw needs fresh staging data or synchronization of mapped memory,
+              // even when the guest buffer address is unchanged.
+              renderer::add_state_set_command(ctx, renderer::GXMState::UniformBuffer, buffer, is_vertex_uniform, block_number, bytes_to_copy_and_pad);
+          """
+          replacement = """#ifdef __SWITCH__
+              if (ctx && ctx->emission_dedup_valid && block_number >= 0 && block_number < 16) {
+                  const int side = is_vertex_uniform ? 0 : 1;
+                  uint32_t &last_addr = ctx->dedup_uniform_addr[side][block_number];
+                  uint16_t &last_size = ctx->dedup_uniform_size[side][block_number];
+                  const uint32_t bit = 1u << block_number;
+                  if ((ctx->dedup_uniform_set[side] & bit) && last_addr == buffer.address() && last_size == block_size)
+                      return;
+                  ctx->dedup_uniform_set[side] |= bit;
+                  last_addr = buffer.address();
+                  last_size = block_size;
+              }
+          #endif
+
+              renderer::add_state_set_command(ctx, renderer::GXMState::UniformBuffer, buffer, is_vertex_uniform, block_number, bytes_to_copy_and_pad);
+          """
+          if marker not in s:
+              raise SystemExit("renderer.cpp uniform buffer block not found")
+          s = s.replace(marker, replacement, 1)
+          renderer.write_text(s)
+          PY
+
           grep -n "dedup_uniform" \
             vita3k/renderer/include/renderer/types.h \
             vita3k/renderer/src/renderer.cpp
@@ -98,6 +157,20 @@ jobs:
           test -f "$SDK/lib/cmake/OpenGL/OpenGLConfig.cmake"
           test -f "$SDK/lib/pkgconfig/vulkan.pc"
           grep -Fqx 'Version: 26.2.3' "$SDK/lib/pkgconfig/vulkan.pc"
+
+          # The unified SDK also contains the portlibs Mesa needs. Overlay them
+          # into the devkitPro Switch portlibs used by cmake/switch.cmake.
+          cp -a "$SDK/." "$DEVKITPRO/portlibs/switch/"
+
+          for f in \
+            "$DEVKITPRO/portlibs/switch/lib/libz.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libzstd.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libexpat.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libelf.a" \
+            "$DEVKITPRO/portlibs/switch/lib/libdrm_nouveau.a"; do
+            test -f "$f"
+          done
+
           echo "sdk=$SDK" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Switch OpenSSL
